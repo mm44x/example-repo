@@ -1,27 +1,26 @@
 import {
 	Ability,
+	Color,
+	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
 	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
+	GUIInfo,
 	Hero,
+	ImageData,
+	InputEventSDK,
 	InputManager,
 	LocalPlayer,
 	Menu,
-	TickSleeper,
-	DOTA_ABILITY_BEHAVIOR,
-	GUIInfo,
-	VMouseKeys,
-	InputEventSDK,
-	RendererSDK,
-	Color,
-	Vector2,
 	Rectangle,
+	RendererSDK,
+	TickSleeper,
+	Vector2,
 	VKeys,
-	ImageData
+	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
-
 
 const NATIVE_SPELLS = [
 	"rubick_telekinesis",
@@ -52,7 +51,11 @@ new (class RubickCombo {
 
 	private readonly autoStealHudNode = this.autoStealNode.AddNode("Floating HUD Panel")
 	private readonly autoStealHudEnabled = this.autoStealHudNode.AddToggle("Show HUD Panel", true)
-	private readonly autoStealHudKey = this.autoStealHudNode.AddKeybind("Toggle HUD Key", "None", "Key to toggle HUD panel visibility")
+	private readonly autoStealHudKey = this.autoStealHudNode.AddKeybind(
+		"Toggle HUD Key",
+		"None",
+		"Key to toggle HUD panel visibility"
+	)
 	private readonly autoStealHudX = this.autoStealHudNode.AddSlider("HUD Position X", 400, 0, 2500)
 	private readonly autoStealHudY = this.autoStealHudNode.AddSlider("HUD Position Y", 200, 0, 2500)
 	private readonly autoStealHudIconSize = this.autoStealHudNode.AddSlider("HUD Icon Size", 36, 20, 80)
@@ -122,9 +125,20 @@ new (class RubickCombo {
 		return adjusted
 	}
 
-	private executeStolenSpells(stolenSpells: Ability[], hero: Hero, bestTarget: Hero, isTargetImmune: boolean): boolean {
+	private executeStolenSpells(
+		stolenSpells: Ability[],
+		hero: Hero,
+		bestTarget: Hero,
+		isTargetImmune: boolean
+	): boolean {
 		for (const stolenSpell of stolenSpells) {
-			if (stolenSpell && stolenSpell.IsValid && stolenSpell.Cooldown <= 0.1 && hero.Mana >= stolenSpell.ManaCost && !isTargetImmune) {
+			if (
+				stolenSpell &&
+				stolenSpell.IsValid &&
+				stolenSpell.Cooldown <= 0.1 &&
+				hero.Mana >= stolenSpell.ManaCost &&
+				!isTargetImmune
+			) {
 				if (this.autoCastGrid.IsEnabled(stolenSpell.Name)) {
 					const isTarget = stolenSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
 					const isPosition = stolenSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
@@ -178,17 +192,21 @@ new (class RubickCombo {
 	}
 
 	private OnDraw(): void {
-		if (!this.hasLocalHero) return
+		if (!this.hasLocalHero) {
+			return
+		}
 
 		const hero = LocalPlayer?.Hero
-		if (!hero || !hero.IsValid || !hero.IsAlive) return
+		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			return
+		}
 
 		// ------------------ FLOATING HUD PANEL DRAGGING ------------------
 		if (this.autoStealHudEnabled.value && this.isDraggingHud) {
 			const cursorPos = InputManager.CursorOnScreen
 			const newX = cursorPos.x - this.dragOffsetX
 			const newY = cursorPos.y - this.dragOffsetY
-			
+
 			this.autoStealHudX.value = Math.max(0, Math.round(newX))
 			this.autoStealHudY.value = Math.max(0, Math.round(newY))
 		}
@@ -201,7 +219,7 @@ new (class RubickCombo {
 					if (this.autoCastGrid.values.includes(abil.Name) && this.autoCastGrid.IsEnabled(abil.Name)) {
 						if (visibleIndex < hud.AbilitiesRects.length) {
 							const rect = this.getAdjustedRect(hud.AbilitiesRects[visibleIndex])
-							
+
 							// Inset the outline box by 2 pixels to fit nicely inside the ability icon slot
 							const insetRect = rect.Clone()
 							insetRect.pos1.x += 2
@@ -210,18 +228,18 @@ new (class RubickCombo {
 							insetRect.pos2.y -= 2
 
 							RendererSDK.OutlinedRect(insetRect.pos1, insetRect.Size, 2, Color.Green)
-							
+
 							// Calculate coordinates to center "AUTO" text at the bottom half of the ability slot
 							const fontName = "PTSans"
 							const fontSize = 11
 							const fontWeight = 800
 							const text = "AUTO"
 							const textSize = RendererSDK.GetTextSize(text, fontName, fontSize, fontWeight, false)
-							
+
 							const textX = rect.pos1.x + (rect.Width - textSize.x) / 2
 							const textY = rect.pos2.y - textSize.y - 4
 							const textPos = new Vector2(textX, textY)
-							
+
 							// Draw semi-transparent black background behind text for readability
 							const bgPaddingX = 4
 							const bgPaddingY = 1
@@ -232,7 +250,7 @@ new (class RubickCombo {
 							RendererSDK.Text(text, textPos, Color.Green, fontName, fontSize, fontWeight, false, true)
 						}
 					}
-					
+
 					if (abil.Name === "kez_switch_weapons") {
 						visibleIndex += 2
 					} else {
@@ -248,29 +266,29 @@ new (class RubickCombo {
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
 			const cols = 5
-			
+
 			const N = values.length
-			
+
 			const panelX = this.autoStealHudX.value
 			const panelY = this.autoStealHudY.value
-			
+
 			const rows = Math.max(1, Math.ceil(N / cols))
 			const panelWidth = Math.max(150, Math.min(N > 0 ? N : cols, cols) * (iconSize + gap) + gap)
 			const headerHeight = 22
 			const panelHeight = headerHeight + rows * (iconSize + gap) + gap
-			
+
 			const panelPos = new Vector2(panelX, panelY)
 			const panelSize = new Vector2(panelWidth, panelHeight)
-			
+
 			// 1. Draw Panel Background (semi-transparent dark with white outline)
 			RendererSDK.FilledRect(panelPos, panelSize, Color.Black.SetA(160))
 			RendererSDK.OutlinedRect(panelPos, panelSize, 1, Color.White.SetA(60))
-			
+
 			// 2. Draw Header Bar & Title
 			const headerRectSize = new Vector2(panelWidth, headerHeight)
 			RendererSDK.FilledRect(panelPos, headerRectSize, Color.Black.SetA(200))
 			RendererSDK.OutlinedRect(panelPos, headerRectSize, 1, Color.White.SetA(60))
-			
+
 			const fontName = "PTSans"
 			const fontSize = 11
 			const fontWeight = 800
@@ -278,8 +296,17 @@ new (class RubickCombo {
 			const titleTextSize = RendererSDK.GetTextSize(titleText, fontName, fontSize, fontWeight, false)
 			const titleX = panelX + (panelWidth - titleTextSize.x) / 2
 			const titleY = panelY + (headerHeight - titleTextSize.y) / 2
-			RendererSDK.Text(titleText, new Vector2(titleX, titleY), Color.White, fontName, fontSize, fontWeight, false, true)
-			
+			RendererSDK.Text(
+				titleText,
+				new Vector2(titleX, titleY),
+				Color.White,
+				fontName,
+				fontSize,
+				fontWeight,
+				false,
+				true
+			)
+
 			// 3. Draw Spell Icons
 			if (N === 0) {
 				const noSpellsText = "No enemy spells detected"
@@ -292,45 +319,41 @@ new (class RubickCombo {
 					const spellName = values[i]
 					const col = i % cols
 					const row = Math.floor(i / cols)
-					
+
 					const iconX = panelX + gap + col * (iconSize + gap)
 					const iconY = panelY + headerHeight + gap + row * (iconSize + gap)
 					const iconPos = new Vector2(iconX, iconY)
 					const iconRectSize = new Vector2(iconSize, iconSize)
-					
+
 					const path = ImageData.GetSpellTexture(spellName)
 					const isEnabled = this.autoStealGrid.IsEnabled(spellName)
-					
+
 					// Draw spell icon (grayscaled if disabled)
-					RendererSDK.Image(
-						path,
-						iconPos,
-						-1,
-						iconRectSize,
-						Color.White,
-						0,
-						undefined,
-						!isEnabled
-					)
-					
+					RendererSDK.Image(path, iconPos, -1, iconRectSize, Color.White, 0, undefined, !isEnabled)
+
 					// Draw border indicators (green if enabled, red if disabled)
 					if (isEnabled) {
 						RendererSDK.OutlinedRect(iconPos, iconRectSize, 2, Color.Green)
 					} else {
 						RendererSDK.OutlinedRect(iconPos, iconRectSize, 1, Color.Red.SetA(180))
 					}
-					
+
 					// Draw priority number badge on top-left of the icon
 					const prioText = `${i + 1}`
 					const prioSize = RendererSDK.GetTextSize(prioText, fontName, 9, 800, false)
 					const badgePaddingX = 3
 					const badgePaddingY = 1
-					
+
 					const badgePos = new Vector2(iconX + 2, iconY + 2)
 					const badgeSize = new Vector2(prioSize.x + badgePaddingX * 2, prioSize.y + badgePaddingY * 2)
-					
+
 					RendererSDK.FilledRect(badgePos, badgeSize, Color.Black.SetA(200))
-					RendererSDK.OutlinedRect(badgePos, badgeSize, 1, isEnabled ? Color.Green.SetA(150) : Color.Red.SetA(150))
+					RendererSDK.OutlinedRect(
+						badgePos,
+						badgeSize,
+						1,
+						isEnabled ? Color.Green.SetA(150) : Color.Red.SetA(150)
+					)
 					RendererSDK.Text(
 						prioText,
 						new Vector2(badgePos.x + badgePaddingX, badgePos.y + badgePaddingY),
@@ -352,17 +375,8 @@ new (class RubickCombo {
 			const path = ImageData.GetSpellTexture(this.dragSpellName)
 			const dragIconPos = cursorPos.Subtract(new Vector2(iconSize / 2, iconSize / 2))
 			const dragIconSize = new Vector2(iconSize, iconSize)
-			
-			RendererSDK.Image(
-				path,
-				dragIconPos,
-				-1,
-				dragIconSize,
-				Color.White,
-				0,
-				undefined,
-				false
-			)
+
+			RendererSDK.Image(path, dragIconPos, -1, dragIconSize, Color.White, 0, undefined, false)
 			RendererSDK.OutlinedRect(dragIconPos, dragIconSize, 2, Color.Yellow)
 		}
 	}
@@ -372,10 +386,14 @@ new (class RubickCombo {
 			return
 		}
 
-		if (!this.hasLocalHero) return
+		if (!this.hasLocalHero) {
+			return
+		}
 
 		const hero = LocalPlayer?.Hero
-		if (!hero) return
+		if (!hero) {
+			return
+		}
 
 		const cursorPos = InputManager.CursorOnScreen
 
@@ -385,29 +403,29 @@ new (class RubickCombo {
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
 			const cols = 5
-			
+
 			const N = values.length
 			const panelX = this.autoStealHudX.value
 			const panelY = this.autoStealHudY.value
-			
+
 			const rows = Math.max(1, Math.ceil(N / cols))
 			const panelWidth = Math.max(150, Math.min(N > 0 ? N : cols, cols) * (iconSize + gap) + gap)
 			const headerHeight = 22
 			const panelHeight = headerHeight + rows * (iconSize + gap) + gap
-			
+
 			// Bounding box of the floating panel
 			const panelRect = new Rectangle(
 				new Vector2(panelX, panelY),
 				new Vector2(panelX + panelWidth, panelY + panelHeight)
 			)
-			
+
 			if (panelRect.Contains(cursorPos)) {
 				// Check if clicked on header for dragging
 				const headerRect = new Rectangle(
 					new Vector2(panelX, panelY),
 					new Vector2(panelX + panelWidth, panelY + headerHeight)
 				)
-				
+
 				if (headerRect.Contains(cursorPos)) {
 					this.isDraggingHud = true
 					this.dragOffsetX = cursorPos.x - panelX
@@ -421,15 +439,15 @@ new (class RubickCombo {
 					const spellName = values[i]
 					const col = i % cols
 					const row = Math.floor(i / cols)
-					
+
 					const iconX = panelX + gap + col * (iconSize + gap)
 					const iconY = panelY + headerHeight + gap + row * (iconSize + gap)
-					
+
 					const iconRect = new Rectangle(
 						new Vector2(iconX, iconY),
 						new Vector2(iconX + iconSize, iconY + iconSize)
 					)
-					
+
 					if (iconRect.Contains(cursorPos)) {
 						if (isCtrlHeld) {
 							this.dragSpellName = spellName
@@ -449,13 +467,16 @@ new (class RubickCombo {
 		}
 
 		// ------------------ LOWER HUD SHIFT+CLICK INTERACTION ------------------
-		if (!InputManager.IsKeyDown(16)) { // Shift key code
+		if (!InputManager.IsKeyDown(16)) {
+			// Shift key code
 			return
 		}
 
 		const hud = GUIInfo.GetLowerHUDForUnit(hero)
-		if (!hud || !hud.AbilitiesRects) return
-		
+		if (!hud || !hud.AbilitiesRects) {
+			return
+		}
+
 		let clickedIndex = -1
 		for (let i = 0; i < hud.AbilitiesRects.length; i++) {
 			const adjustedRect = this.getAdjustedRect(hud.AbilitiesRects[i])
@@ -479,7 +500,7 @@ new (class RubickCombo {
 						}
 						return true
 					}
-					
+
 					if (abil.Name === "kez_switch_weapons") {
 						visibleIndex += 2
 					} else {
@@ -497,58 +518,58 @@ new (class RubickCombo {
 				Menu.Base.SaveConfigASAP = true
 				return true
 			}
-			
+
 			if (this.dragSpellName !== undefined) {
 				const dragSpellName = this.dragSpellName
 				this.dragSpellName = undefined
-				
+
 				if (this.autoStealHudEnabled.value) {
 					const values = this.autoStealGrid.values
 					const iconSize = this.autoStealHudIconSize.value
 					const gap = 6
 					const cols = 5
-					
+
 					const N = values.length
 					const panelX = this.autoStealHudX.value
 					const panelY = this.autoStealHudY.value
 					const headerHeight = 22
-					
+
 					const cursorPos = InputManager.CursorOnScreen
-					
-					let targetSpellName: string | undefined = undefined
+
+					let targetSpellName: string | undefined
 					for (let i = 0; i < N; i++) {
 						const col = i % cols
 						const row = Math.floor(i / cols)
-						
+
 						const iconX = panelX + gap + col * (iconSize + gap)
 						const iconY = panelY + headerHeight + gap + row * (iconSize + gap)
-						
+
 						const iconRect = new Rectangle(
 							new Vector2(iconX, iconY),
 							new Vector2(iconX + iconSize, iconY + iconSize)
 						)
-						
+
 						if (iconRect.Contains(cursorPos)) {
 							targetSpellName = values[i]
 							break
 						}
 					}
-					
+
 					if (targetSpellName !== undefined && targetSpellName !== dragSpellName) {
 						const entries = [...this.autoStealGrid.enabledValues.entries()]
 						entries.sort((a, b) => a[1][3] - b[1][3])
-						
+
 						const dragIdx = entries.findIndex(e => e[0] === dragSpellName)
 						const targetIdx = entries.findIndex(e => e[0] === targetSpellName)
-						
+
 						if (dragIdx !== -1 && targetIdx !== -1) {
 							const [dragged] = entries.splice(dragIdx, 1)
 							entries.splice(targetIdx, 0, dragged)
-							
+
 							for (let k = 0; k < entries.length; k++) {
 								entries[k][1][3] = k
 							}
-							
+
 							this.autoStealGrid.Update()
 							Menu.Base.SaveConfigASAP = true
 						}
@@ -560,16 +581,31 @@ new (class RubickCombo {
 	}
 
 	private get hasLocalHero() {
-		return LocalPlayer && LocalPlayer.Hero && LocalPlayer.Hero.IsValid && LocalPlayer.Hero.Name === "npc_dota_hero_rubick"
+		return (
+			LocalPlayer &&
+			LocalPlayer.Hero &&
+			LocalPlayer.Hero.IsValid &&
+			LocalPlayer.Hero.Name === "npc_dota_hero_rubick"
+		)
 	}
 
 	private isValidSpell(abil: Ability | undefined): abil is Ability {
-		if (!abil || !abil.IsValid || abil.IsHidden || abil.IsItem) return false
+		if (!abil || !abil.IsValid || abil.IsHidden || abil.IsItem) {
+			return false
+		}
 		const name = abil.Name
-		if (NATIVE_SPELLS.includes(name)) return false
-		if (name.startsWith("special_bonus_")) return false
-		if (name.includes("empty")) return false
-		if (name === "plus_high_five" || name === "twin_gate_portal_warp") return false
+		if (NATIVE_SPELLS.includes(name)) {
+			return false
+		}
+		if (name.startsWith("special_bonus_")) {
+			return false
+		}
+		if (name.includes("empty")) {
+			return false
+		}
+		if (name === "plus_high_five" || name === "twin_gate_portal_warp") {
+			return false
+		}
 
 		const isPassive = abil.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_PASSIVE)
 		const isNoTarget = abil.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
@@ -606,10 +642,16 @@ new (class RubickCombo {
 		}
 
 		const spellName = ability.Name
-		
+
 		if (this.autoStealGrid.IsEnabled(spellName)) {
 			const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
-			if (spellSteal && spellSteal.IsValid && spellSteal.Level > 0 && spellSteal.Cooldown <= 0.1 && hero.Mana >= spellSteal.ManaCost) {
+			if (
+				spellSteal &&
+				spellSteal.IsValid &&
+				spellSteal.Level > 0 &&
+				spellSteal.Cooldown <= 0.1 &&
+				hero.Mana >= spellSteal.ManaCost
+			) {
 				// --- GRID PRIORITY LOGIC ---
 				const newSpellPriority = this.autoStealGrid.GetPriority(spellName)
 				let shouldSteal = true
@@ -661,7 +703,9 @@ new (class RubickCombo {
 							isPlayerInput: false
 						})
 						// Gunakan delay 0.8 detik agar cukup untuk mencegah spam brutal, namun cukup cepat di teamfight
-						this.stealSleeper.Sleep(Math.max(800, GameState.InputLag * 1000 + spellSteal.CastPoint * 1000 + 100))
+						this.stealSleeper.Sleep(
+							Math.max(800, GameState.InputLag * 1000 + spellSteal.CastPoint * 1000 + 100)
+						)
 					}
 				}
 			}
@@ -693,7 +737,7 @@ new (class RubickCombo {
 
 		// Secara dinamis mendaftarkan spell yang dicuri ke dalam menu
 		const abilities = hero.Spells
-		let stolenSpells: Ability[] = []
+		const stolenSpells: Ability[] = []
 
 		for (const abil of abilities) {
 			if (this.isValidSpell(abil)) {
@@ -720,7 +764,7 @@ new (class RubickCombo {
 
 		// Cari target hero musuh terdekat dengan posisi kursor mouse
 		const mousePos = InputManager.CursorOnWorld
-		let bestTarget: Hero | undefined = undefined
+		let bestTarget: Hero | undefined
 		let minDist = Infinity
 
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
@@ -750,7 +794,14 @@ new (class RubickCombo {
 			if (spellName === "rubick_telekinesis") {
 				// 1. Telekinesis
 				const telekinesis = hero.GetAbilityByName("rubick_telekinesis")
-				if (telekinesis && telekinesis.IsValid && telekinesis.Level > 0 && telekinesis.Cooldown <= 0.1 && hero.Mana >= telekinesis.ManaCost && !isTargetImmune) {
+				if (
+					telekinesis &&
+					telekinesis.IsValid &&
+					telekinesis.Level > 0 &&
+					telekinesis.Cooldown <= 0.1 &&
+					hero.Mana >= telekinesis.ManaCost &&
+					!isTargetImmune
+				) {
 					const castRange = telekinesis.CastRange > 0 ? telekinesis.CastRange : 600
 					if (hero.Distance2D(bestTarget) <= castRange) {
 						ExecuteOrder.PrepareOrder({
@@ -785,7 +836,14 @@ new (class RubickCombo {
 
 				// 3. Fade Bolt
 				const fadeBolt = hero.GetAbilityByName("rubick_fade_bolt")
-				if (fadeBolt && fadeBolt.IsValid && fadeBolt.Level > 0 && fadeBolt.Cooldown <= 0.1 && hero.Mana >= fadeBolt.ManaCost && !isTargetImmune) {
+				if (
+					fadeBolt &&
+					fadeBolt.IsValid &&
+					fadeBolt.Level > 0 &&
+					fadeBolt.Cooldown <= 0.1 &&
+					hero.Mana >= fadeBolt.ManaCost &&
+					!isTargetImmune
+				) {
 					const castRange = fadeBolt.CastRange > 0 ? fadeBolt.CastRange : 800
 					if (hero.Distance2D(bestTarget) <= castRange) {
 						ExecuteOrder.PrepareOrder({
@@ -812,7 +870,14 @@ new (class RubickCombo {
 
 				// 4. Spell Steal
 				const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
-				if (spellSteal && spellSteal.IsValid && spellSteal.Level > 0 && spellSteal.Cooldown <= 0.1 && hero.Mana >= spellSteal.ManaCost && !isTargetImmune) {
+				if (
+					spellSteal &&
+					spellSteal.IsValid &&
+					spellSteal.Level > 0 &&
+					spellSteal.Cooldown <= 0.1 &&
+					hero.Mana >= spellSteal.ManaCost &&
+					!isTargetImmune
+				) {
 					const castRange = spellSteal.CastRange > 0 ? spellSteal.CastRange : 1000
 					if (hero.Distance2D(bestTarget) <= castRange) {
 						ExecuteOrder.PrepareOrder({

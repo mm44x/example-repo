@@ -593,11 +593,9 @@ new (class AutoBootsUtility {
 			if (lastPos && enemy.Position.Distance(lastPos) > 300) {
 				triggered = true
 			}
-		} else {
+		} else if (enemy.Distance(hero) <= this.antiInitRange.value) {
 			// Sudden arrival from fog / invis
-			if (enemy.Distance(hero) <= this.antiInitRange.value) {
-				triggered = true
-			}
+			triggered = true
 		}
 
 		// If sudden arrival toggle is off, trigger on any target in range

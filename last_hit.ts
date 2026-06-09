@@ -1,24 +1,24 @@
 import {
 	Ability,
+	ATTACK_DAMAGE_STRENGTH,
+	Color,
+	Creep,
+	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
 	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
 	Hero,
-	Creep,
-	Tower,
 	InputManager,
 	LocalPlayer,
 	Menu,
-	TickSleeper,
-	DOTA_ABILITY_BEHAVIOR,
-	ATTACK_DAMAGE_STRENGTH,
-	ProjectileManager,
-	Unit,
-	Color,
+	ParticleAttachment,
 	ParticlesSDK,
-	ParticleAttachment
+	ProjectileManager,
+	TickSleeper,
+	Tower,
+	Unit
 } from "github.com/octarine-public/wrapper/index"
 
 const lastHitSleeper = new TickSleeper()
@@ -27,11 +27,21 @@ class CustomLastHit {
 	private readonly entry = Menu.AddEntry("Custom Last Hit")
 
 	private readonly lastHitKey = this.entry.AddKeybind("Hold Key", "Space", "Hold to auto last hit and deny")
+	private readonly spellsKey = this.entry.AddKeybind("Spells Key", "None", "Hold to auto last hit using spells")
 	private readonly denyEnabled = this.entry.AddToggle("Deny Friendly Creeps", true)
-	private readonly prioritySetting = this.entry.AddDropdown("Action Priority", ["Last Hit", "Deny"], 0, "Select which action to prioritize")
+	private readonly prioritySetting = this.entry.AddDropdown(
+		"Action Priority",
+		["Last Hit", "Deny"],
+		0,
+		"Select which action to prioritize"
+	)
 	private readonly spellsEnabled = this.entry.AddToggle("Use Spells for Last Hit", false)
 	private readonly showAttackRange = this.entry.AddToggle("Show Attack Range", false)
-	private readonly followCursor = this.entry.AddToggle("Follow Mouse Cursor", true, "Move to mouse position when holding key and idle")
+	private readonly followCursor = this.entry.AddToggle(
+		"Follow Mouse Cursor",
+		true,
+		"Move to mouse position when holding key and idle"
+	)
 
 	private readonly harassNode = this.entry.AddNode("Harass Options")
 	private readonly harassEnabled = this.harassNode.AddToggle("Harass Enemy Heroes", true)
@@ -114,7 +124,8 @@ class CustomLastHit {
 
 			// Only track attacks from units targeting this creep
 			const targetIndex = this.unitTargets.get(unit.Index)
-			const isCurrentlyTargeting = (unit.Target && unit.Target.Index === creep.Index) || targetIndex === creep.Index
+			const isCurrentlyTargeting =
+				(unit.Target && unit.Target.Index === creep.Index) || targetIndex === creep.Index
 			if (!isCurrentlyTargeting) {
 				continue
 			}
@@ -130,7 +141,7 @@ class CustomLastHit {
 			const isInAnimation = unit.IsInAnimation && unit.LastAnimationIsAttack && !unit.LastAnimationCasted
 
 			if (isInAnimation) {
-				const remainingTime = (unit.LastAnimationStartTime + unit.LastAnimationCastPoint) - GameState.RawGameTime
+				const remainingTime = unit.LastAnimationStartTime + unit.LastAnimationCastPoint - GameState.RawGameTime
 				nextFireTime = GameState.RawServerTime + Math.max(0, remainingTime)
 			} else {
 				nextFireTime = Math.max(
@@ -141,7 +152,7 @@ class CustomLastHit {
 
 			// Project when the attack will land
 			const travelTime = unit.IsRanged
-				? (unit.Distance2D(creep) / (unit.AttackProjectileSpeed > 0 ? unit.AttackProjectileSpeed : 1000))
+				? unit.Distance2D(creep) / (unit.AttackProjectileSpeed > 0 ? unit.AttackProjectileSpeed : 1000)
 				: 0
 
 			let currentUnitLandTime = nextFireTime + travelTime
@@ -158,7 +169,8 @@ class CustomLastHit {
 	}
 
 	private updateAttackRangeDraw(hero: Hero): void {
-		if (this.showAttackRange.value && this.lastHitKey.isPressed && hero && hero.IsValid && hero.IsAlive) {
+		const isKeyPressed = this.lastHitKey.isPressed || this.spellsKey.isPressed
+		if (this.showAttackRange.value && isKeyPressed && hero && hero.IsValid && hero.IsAlive) {
 			const attackRange = hero.GetAttackRange(undefined, 0, false)
 			this.pSDK.DrawCircle("hero_attack_range", hero, attackRange, {
 				Color: Color.Green,
@@ -190,14 +202,16 @@ class CustomLastHit {
 		// Draw/update attack range display
 		this.updateAttackRangeDraw(hero)
 
-		if (!this.lastHitKey.isPressed) {
+		const isLastHitKeyPressed = this.lastHitKey.isPressed
+		const isSpellsKeyPressed = this.spellsKey.isPressed
+
+		if (!isLastHitKeyPressed && !isSpellsKeyPressed) {
 			return
 		}
 
 		if (lastHitSleeper.Sleeping) {
 			return
 		}
-
 
 		if (hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed || hero.IsInvisible) {
 			return
@@ -208,22 +222,29 @@ class CustomLastHit {
 		})
 
 		const usableSpells = hero.Spells.filter((s): s is Ability => {
-			if (!s || !s.IsValid || s.IsHidden || s.IsItem || s.Level === 0) return false
-			if (s.IsPassive) return false
-			if (s.AbilitySlot !== undefined && s.AbilitySlot > 2) return false
+			if (!s || !s.IsValid || s.IsHidden || s.IsItem || s.Level === 0) {
+				return false
+			}
+			if (s.IsPassive) {
+				return false
+			}
+			if (s.AbilitySlot !== undefined && s.AbilitySlot > 2) {
+				return false
+			}
 			return s.Cooldown <= 0.1 && hero.Mana >= s.ManaCost
 		})
 
-		let bestLastHitCreep: Creep | undefined = undefined
-		let bestDenyCreep: Creep | undefined = undefined
-		let bestSpellLastHitCreep: Creep | undefined = undefined
-		let bestSpell: Ability | undefined = undefined
+		let bestLastHitCreep: Creep | undefined
+		let bestDenyCreep: Creep | undefined
+		let bestSpellLastHitCreep: Creep | undefined
+		let bestSpell: Ability | undefined
 
 		for (const creep of creeps) {
 			const turnTime = hero.TurnTimeNew(creep.Position, false)
 			const attackPoint = hero.GetNextAttackPoint(GameState.InputLag)
-			const projectileTravelTime = hero.IsRanged ? (hero.Distance2D(creep) / hero.AttackProjectileSpeed) : 0
-			const landTime = GameState.RawServerTime + GameState.InputLag + turnTime + attackPoint + projectileTravelTime
+			const projectileTravelTime = hero.IsRanged ? hero.Distance2D(creep) / hero.AttackProjectileSpeed : 0
+			const landTime =
+				GameState.RawServerTime + GameState.InputLag + turnTime + attackPoint + projectileTravelTime
 
 			const predictedHP = this.predictCreepHealth(hero, creep, landTime)
 			const attackDamage = hero.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
@@ -233,9 +254,13 @@ class CustomLastHit {
 					if (!bestLastHitCreep || creep.HP < bestLastHitCreep.HP) {
 						bestLastHitCreep = creep
 					}
-				} else if (this.spellsEnabled.value) {
+				} else if (this.spellsEnabled.value || isSpellsKeyPressed) {
 					for (const spell of usableSpells) {
-						const spellLandTime = GameState.RawServerTime + GameState.InputLag + hero.TurnTimeNew(creep.Position, false) + spell.CastPoint
+						const spellLandTime =
+							GameState.RawServerTime +
+							GameState.InputLag +
+							hero.TurnTimeNew(creep.Position, false) +
+							spell.CastPoint
 						const predictedSpellHP = this.predictCreepHealth(hero, creep, spellLandTime)
 						const spellDamage = spell.GetDamage(creep)
 						if (predictedSpellHP <= spellDamage && predictedSpellHP > 0) {
@@ -246,7 +271,7 @@ class CustomLastHit {
 						}
 					}
 				}
-			} else if (this.denyEnabled.value && (creep.HP / creep.MaxHP) < 0.5) {
+			} else if (this.denyEnabled.value && creep.HP / creep.MaxHP < 0.5) {
 				if (predictedHP <= attackDamage && predictedHP > 0) {
 					if (!bestDenyCreep || creep.HP < bestDenyCreep.HP) {
 						bestDenyCreep = creep
@@ -353,7 +378,12 @@ class CustomLastHit {
 
 		if (this.harassEnabled.value && !hero.IsDisarmed && hero.CanAttack()) {
 			const inEnemyTowerRange = EntityManager.GetEntitiesByClass(Tower).some(t => {
-				return t.IsValid && t.IsAlive && t.IsEnemy(hero) && hero.Position.Distance2D(t.Position) <= t.GetAttackRange(hero)
+				return (
+					t.IsValid &&
+					t.IsAlive &&
+					t.IsEnemy(hero) &&
+					hero.Position.Distance2D(t.Position) <= t.GetAttackRange(hero)
+				)
 			})
 
 			const nearEnemyCreeps = EntityManager.GetEntitiesByClass(Creep).some(c => {
@@ -363,7 +393,7 @@ class CustomLastHit {
 			const safeToHarass = this.aggressiveHarass.value || (!inEnemyTowerRange && !nearEnemyCreeps)
 
 			if (safeToHarass) {
-				let bestHarassTarget: Hero | undefined = undefined
+				let bestHarassTarget: Hero | undefined
 				let minDist = Infinity
 				const searchRadius = this.harassSearchRadius.value
 
