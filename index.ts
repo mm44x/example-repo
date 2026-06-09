@@ -1,6 +1,7 @@
 import "./auto_ban"
 import "./rubick_combo"
 import "./last_hit"
+import "./armlet_abuse"
 
 import {
 	Ability,
