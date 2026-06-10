@@ -3,6 +3,7 @@ import "./rubick_combo"
 import "./last_hit"
 import "./armlet_abuse"
 import "./anti_initiation"
+import "./auto_save"
 
 import {
 	Attributes,
