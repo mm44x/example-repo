@@ -8,7 +8,7 @@ import {
 } from "github.com/octarine-public/wrapper/index"
 
 new (class AutoBanUtility {
-	private readonly entry = Menu.AddEntry("Utility")
+	private readonly entry = Menu.AddEntry("mm44x")
 	private readonly tree = this.entry.AddNode("Auto Ban Heroes", "menu/icons/juggernaut.svg")
 	private readonly enabled = this.tree.AddToggle("Enabled", false)
 

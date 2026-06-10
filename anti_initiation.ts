@@ -28,10 +28,18 @@ interface SpellConfig {
 const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "lion_voodoo", label: "Lion Hex", piercesBkb: false, castType: "target" },
 	{ name: "lion_impale", label: "Lion Earth Spike", piercesBkb: false, castType: "position", castRange: 725 },
+	{ name: "nyx_assassin_impale", label: "Impale (Nyx)", piercesBkb: false, castType: "position", castRange: 700 },
+	{ name: "tiny_avalanche", label: "Avalanche", piercesBkb: false, castType: "position", castRange: 600 },
+	{ name: "jakiro_ice_path", label: "Ice Path", piercesBkb: false, castType: "position", castRange: 1200 },
 	{ name: "shadow_shaman_voodoo", label: "Shaman Hex", piercesBkb: false, castType: "target" },
 	{ name: "shadow_shaman_shackles", label: "Shackles", piercesBkb: false, castType: "target" },
 	{ name: "rubick_telekinesis", label: "Telekinesis", piercesBkb: false, castType: "target" },
 	{ name: "dragon_knight_dragon_tail", label: "Dragon Tail", piercesBkb: false, castType: "target" },
+	{ name: "vengefulspirit_magic_missile", label: "Magic Missile", piercesBkb: false, castType: "target" },
+	{ name: "skeleton_king_hellfire_blast", label: "Wraithfire Blast", piercesBkb: false, castType: "target" },
+	{ name: "witch_doctor_paralyzing_cask", label: "Paralyzing Cask", piercesBkb: false, castType: "target" },
+	{ name: "ogre_magi_fireblast", label: "Fire Blast", piercesBkb: false, castType: "target" },
+	{ name: "luna_lucent_beam", label: "Lucent Beam", piercesBkb: false, castType: "target" },
 	{ name: "crystal_maiden_frostbite", label: "Frostbite", piercesBkb: false, castType: "target" },
 	{
 		name: "obsidian_destroyer_astral_imprisonment",
@@ -41,6 +49,8 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	},
 	{ name: "shadow_demon_disruption", label: "Disruption", piercesBkb: false, castType: "target" },
 	{ name: "bane_nightmare", label: "Nightmare", piercesBkb: false, castType: "target" },
+	{ name: "skywrath_mage_ancient_seal", label: "Ancient Seal", piercesBkb: false, castType: "target" },
+	{ name: "riki_smoke_screen", label: "Smoke Screen", piercesBkb: false, castType: "position", castRange: 550 },
 	{ name: "bane_fiends_grip", label: "Fiend's Grip", piercesBkb: true, castType: "target" },
 	{ name: "beastmaster_primal_roar", label: "Primal Roar", piercesBkb: true, castType: "target" },
 	{ name: "doom_bringer_doom", label: "Doom", piercesBkb: true, castType: "target" },
@@ -51,7 +61,7 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 ]
 
 new (class AntiInitiationUtility {
-	private readonly entry = Menu.AddEntry("Utility")
+	private readonly entry = Menu.AddEntry("mm44x")
 
 	// Anti Initiation Nodes
 	private readonly antiInitiationNode = this.entry.AddNode("Anti Initiation")
@@ -466,9 +476,10 @@ new (class AntiInitiationUtility {
 				) {
 					const baseCastRange = config.castRange ?? spell.CastRange
 					const castRange = baseCastRange > 0 ? baseCastRange : 600
-					const inRange = config.castType === "position"
-						? hero.Distance2D(enemy) <= castRange
-						: hero.Distance2D(enemy, true) <= castRange
+					const inRange =
+						config.castType === "position"
+							? hero.Distance2D(enemy) <= castRange
+							: hero.Distance2D(enemy, true) <= castRange
 					if (inRange) {
 						candidates.push({
 							name: config.label,
@@ -524,11 +535,7 @@ new (class AntiInitiationUtility {
 		const dist2D = enemy.Distance2D(hero, true)
 		if (wasVisible) {
 			// Check if they moved > 300 units in a single frame and landed in range
-			if (
-				lastPos &&
-				enemy.Position.Distance2D(lastPos) > 300 &&
-				dist2D <= this.antiInitRange.value
-			) {
+			if (lastPos && enemy.Position.Distance2D(lastPos) > 300 && dist2D <= this.antiInitRange.value) {
 				triggered = true
 			}
 		} else if (dist2D <= this.antiInitRange.value) {

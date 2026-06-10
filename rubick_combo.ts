@@ -40,7 +40,7 @@ const NATIVE_SPELLS = [
 ]
 
 new (class RubickCombo {
-	private readonly entry = Menu.AddEntry("Rubick Combo")
+	private readonly entry = Menu.AddEntry("mm44x").AddNode("Rubick Combo")
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Rubick combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)

@@ -24,7 +24,7 @@ import {
 const lastHitSleeper = new TickSleeper()
 
 class CustomLastHit {
-	private readonly entry = Menu.AddEntry("Utility").AddNode("Custom Last Hit")
+	private readonly entry = Menu.AddEntry("mm44x").AddNode("Custom Last Hit")
 
 	private readonly lastHitKey = this.entry.AddKeybind("Hold Key", "Space", "Hold to auto last hit and deny")
 	private readonly spellsKey = this.entry.AddKeybind("Spells Key", "None", "Hold to auto last hit using spells")

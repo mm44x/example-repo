@@ -20,7 +20,7 @@ import {
 } from "github.com/octarine-public/wrapper/index"
 
 class SmartArmletAbuse {
-	private readonly entry = Menu.AddEntry("Utility").AddNode("Smart Armlet Abuse")
+	private readonly entry = Menu.AddEntry("mm44x").AddNode("Smart Armlet Abuse")
 
 	private readonly enabled = this.entry.AddToggle("Enabled", true)
 	private readonly toggleKey = this.entry.AddKeybind("Toggle Keybind", "None", "Toggle script enabled/disabled state")

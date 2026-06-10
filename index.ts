@@ -24,7 +24,7 @@ interface ScheduledSwitch {
 }
 
 new (class AutoBootsUtility {
-	private readonly entry = Menu.AddEntry("Utility")
+	private readonly entry = Menu.AddEntry("mm44x")
 
 	// Auto Boots Nodes
 	private readonly bootsTree = this.entry.AddNode("Auto Boots")
