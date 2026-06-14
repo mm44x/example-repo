@@ -13,6 +13,7 @@ import {
 	TickSleeper,
 	Unit
 } from "github.com/octarine-public/wrapper/index"
+import { executeOrbwalk } from "./orbwalker"
 
 new (class VisageCombo {
 	private readonly entry = Menu.AddEntry("mm44x").AddNode("Visage Combo")
@@ -34,6 +35,11 @@ new (class VisageCombo {
 		100,
 		5,
 		"Target distance percentage of attack range to maintain during Orb Walk"
+	)
+	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
+		"Stop-to-Cancel Backswing",
+		false,
+		"Use STOP before moving during backswing cancel for crisper animation break on some heroes"
 	)
 	private readonly minSoulCharges = this.entry.AddSlider(
 		"Min Soul Assumption Charges",
@@ -708,86 +714,11 @@ new (class VisageCombo {
 			}
 		}
 
-		// Fallback: Smart Orb Walk / Serang Target
-		if (!this.sleeper.Sleeping) {
-			if (this.smartOrbWalkEnabled.value) {
-				const isAttackingAnimation = hero.IsInAnimation && hero.LastAnimationIsAttack
-				if (isAttackingAnimation) {
-					const elapsed = GameState.RawGameTime - hero.LastAnimationStartTime
-					const attackPoint = hero.AttackPoint
-					// Jika sudah melewati attack point (windup selesai), cancel backswing dengan bergerak
-					if (elapsed >= attackPoint) {
-						const dir = bestTarget.Position.Subtract(hero.Position)
-						const dist = dir.Length2D
-						const safeDist = hero.BaseAttackRange * (this.smartOrbWalkDistancePct.value / 100)
-						const movePos =
-							dist > 0
-								? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
-								: bestTarget.Position
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-							issuers: [hero],
-							position: movePos,
-							queue: false,
-							showEffects: false,
-							isPlayerInput: false
-						})
-						this.sleeper.Sleep(100)
-						return
-					}
-					// Jika masih windup, diam/tunggu serangan selesai
-					return
-				}
-
-				// Jika tidak sedang animasi menyerang, cek cooldown serangan
-				const timeSinceLastAttack = GameState.RawGameTime - hero.LastAttackTime
-				const secondsPerAttack = hero.SecondsPerAttack
-				// Jika serangan siap (atau hampir siap dengan toleransi 50ms)
-				if (timeSinceLastAttack >= secondsPerAttack - 0.05) {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-						issuers: [hero],
-						target: bestTarget.Index,
-						queue: false,
-						showEffects: false,
-						isPlayerInput: false
-					})
-					this.sleeper.Sleep(100)
-				} else {
-					// Jika serangan sedang cooldown, bergerak mendekati target untuk mengikuti
-					const dir = bestTarget.Position.Subtract(hero.Position)
-					const dist = dir.Length2D
-					const safeDist = hero.BaseAttackRange * (this.smartOrbWalkDistancePct.value / 100)
-					const movePos =
-						dist > 0
-							? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
-							: bestTarget.Position
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-						issuers: [hero],
-						position: movePos,
-						queue: false,
-						showEffects: false,
-						isPlayerInput: false
-					})
-					this.sleeper.Sleep(100)
-				}
-			} else {
-				// Fallback standar: serang target langsung
-				const currentTarget = hero.Target
-				if (currentTarget && currentTarget.Index === bestTarget.Index) {
-					return
-				}
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-					issuers: [hero],
-					target: bestTarget.Index,
-					queue: false,
-					showEffects: false,
-					isPlayerInput: false
-				})
-				this.sleeper.Sleep(150)
-			}
-		}
+		// Fallback: Smart Orb Walk / Serang Target via shared orbwalker
+		executeOrbwalk(hero, bestTarget, this.sleeper, {
+			enabled: this.smartOrbWalkEnabled.value,
+			safeDistancePct: this.smartOrbWalkDistancePct.value,
+			stopToCancel: this.smartOrbWalkStopCancel.value
+		})
 	}
 })()

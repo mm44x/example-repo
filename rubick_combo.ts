@@ -21,6 +21,7 @@ import {
 	VKeys,
 	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
+import { executeOrbwalk, type OrbwalkConfig } from "./orbwalker"
 
 const NATIVE_SPELLS = [
 	"rubick_telekinesis",
@@ -44,6 +45,24 @@ new (class RubickCombo {
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Rubick combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
+	private readonly smartOrbWalkEnabled = this.entry.AddToggle(
+		"Enable Smart Orb Walk",
+		true,
+		"Follow moving targets by cancelling attack backswing"
+	)
+	private readonly smartOrbWalkDistancePct = this.entry.AddSlider(
+		"Orb Walk Safe Distance %",
+		80,
+		10,
+		100,
+		5,
+		"Target distance percentage of attack range to maintain during Orb Walk"
+	)
+	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
+		"Stop-to-Cancel Backswing",
+		false,
+		"Use STOP before moving during backswing cancel for crisper animation break on some heroes"
+	)
 
 	private readonly autoStealNode = this.entry.AddNode("Auto Steal Spells (Background)")
 	private readonly autoStealEnabled = this.autoStealNode.AddToggle("Enabled", true)
@@ -955,17 +974,11 @@ new (class RubickCombo {
 			}
 		}
 
-		// Fallback: Jika target di luar jangkauan seluruh spell, otomatis jalan mendekati musuh
-		if (!this.sleeper.Sleeping) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-				issuers: [hero],
-				position: bestTarget.Position,
-				queue: false,
-				showEffects: false,
-				isPlayerInput: false
-			})
-			this.sleeper.Sleep(150) // Jeda 150ms agar jalan mulus tanpa merusak pergerakan
-		}
+		// Fallback: Orb Walk / serang target via shared orbwalker
+		executeOrbwalk(hero, bestTarget, this.sleeper, {
+			enabled: this.smartOrbWalkEnabled.value,
+			safeDistancePct: this.smartOrbWalkDistancePct.value,
+			stopToCancel: this.smartOrbWalkStopCancel.value
+		})
 	}
 })()
