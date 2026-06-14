@@ -22,25 +22,92 @@ new (class VisageCombo {
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Visage combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
-	private readonly smartOrbWalkEnabled = this.entry.AddToggle("Enable Smart Orb Walk", true, "Follow moving targets by cancelling attack backswing")
-	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 5, "Target distance percentage of attack range to maintain during Orb Walk")
-	private readonly minSoulCharges = this.entry.AddSlider("Min Soul Assumption Charges", 3, 1, 6, 0, "Minimum stacks before casting Soul Assumption")
-	private readonly autoStoneFormEnabled = this.entry.AddToggle("Auto Stone Form (Stun Chain)", true, "Chain-stun target with familiars")
+	private readonly smartOrbWalkEnabled = this.entry.AddToggle(
+		"Enable Smart Orb Walk",
+		true,
+		"Follow moving targets by cancelling attack backswing"
+	)
+	private readonly smartOrbWalkDistancePct = this.entry.AddSlider(
+		"Orb Walk Safe Distance %",
+		80,
+		10,
+		100,
+		5,
+		"Target distance percentage of attack range to maintain during Orb Walk"
+	)
+	private readonly minSoulCharges = this.entry.AddSlider(
+		"Min Soul Assumption Charges",
+		3,
+		1,
+		6,
+		0,
+		"Minimum stacks before casting Soul Assumption"
+	)
+	private readonly autoStoneFormEnabled = this.entry.AddToggle(
+		"Auto Stone Form (Stun Chain)",
+		true,
+		"Chain-stun target with familiars"
+	)
 
 	// Auto Soul Assumption node
 	private readonly autoSoulNode = this.entry.AddNode("Auto Soul Assumption")
-	private readonly autoSoulEnabled = this.autoSoulNode.AddToggle("Enabled", false, "Auto cast Soul Assumption outside combo key")
-	private readonly autoSoulMinCharges = this.autoSoulNode.AddSlider("Min Charges", 4, 1, 6, 0, "Minimum stacks to auto-cast")
+	private readonly autoSoulEnabled = this.autoSoulNode.AddToggle(
+		"Enabled",
+		false,
+		"Auto cast Soul Assumption outside combo key"
+	)
+	private readonly autoSoulMinCharges = this.autoSoulNode.AddSlider(
+		"Min Charges",
+		4,
+		1,
+		6,
+		0,
+		"Minimum stacks to auto-cast"
+	)
 
 	// Auto Save node
 	private readonly autoSaveNode = this.entry.AddNode("Auto Save (Low HP)")
-	private readonly autoSaveEnabled = this.autoSaveNode.AddToggle("Enabled", true, "Auto save Visage and familiars when low HP")
-	private readonly visageSaveHpPct = this.autoSaveNode.AddSlider("Visage Save HP %", 30, 5, 80, 0, "HP percentage to trigger Visage self-save")
-	private readonly familiarSaveHpPct = this.autoSaveNode.AddSlider("Familiar Save HP %", 40, 5, 80, 0, "HP percentage to trigger Familiar Stone Form save")
-	private readonly visageSaveGraveChill = this.autoSaveNode.AddToggle("Visage: Use Grave Chill", true, "Cast Grave Chill on nearest enemy to slow")
-	private readonly visageSaveSilentGrave = this.autoSaveNode.AddToggle("Visage: Use Silent As The Grave", true, "Cast Silent As The Grave for invis")
-	private readonly visageSaveGravekeepersCloak = this.autoSaveNode.AddToggle("Visage: Use Gravekeeper's Cloak", true, "Cast Gravekeeper's Cloak (Aghs Shard) for stone form")
-	private readonly familiarSaveStoneForm = this.autoSaveNode.AddToggle("Familiar: Use Stone Form", true, "Cast Stone Form for magic immunity + stun aura")
+	private readonly autoSaveEnabled = this.autoSaveNode.AddToggle(
+		"Enabled",
+		true,
+		"Auto save Visage and familiars when low HP"
+	)
+	private readonly visageSaveHpPct = this.autoSaveNode.AddSlider(
+		"Visage Save HP %",
+		30,
+		5,
+		80,
+		0,
+		"HP percentage to trigger Visage self-save"
+	)
+	private readonly familiarSaveHpPct = this.autoSaveNode.AddSlider(
+		"Familiar Save HP %",
+		40,
+		5,
+		80,
+		0,
+		"HP percentage to trigger Familiar Stone Form save"
+	)
+	private readonly visageSaveGraveChill = this.autoSaveNode.AddToggle(
+		"Visage: Use Grave Chill",
+		true,
+		"Cast Grave Chill on nearest enemy to slow"
+	)
+	private readonly visageSaveSilentGrave = this.autoSaveNode.AddToggle(
+		"Visage: Use Silent As The Grave",
+		true,
+		"Cast Silent As The Grave for invis"
+	)
+	private readonly visageSaveGravekeepersCloak = this.autoSaveNode.AddToggle(
+		"Visage: Use Gravekeeper's Cloak",
+		true,
+		"Cast Gravekeeper's Cloak (Aghs Shard) for stone form"
+	)
+	private readonly familiarSaveStoneForm = this.autoSaveNode.AddToggle(
+		"Familiar: Use Stone Form",
+		true,
+		"Cast Stone Form for magic immunity + stun aura"
+	)
 
 	private comboSequenceGrid: any
 
@@ -59,16 +126,21 @@ new (class VisageCombo {
 
 		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
 			"Combo Order",
-			[
-				"visage_grave_chill",
-				"visage_soul_assumption",
-				"visage_silent_as_the_grave",
-				"visage_summon_familiars"
-			],
+			["visage_grave_chill", "visage_soul_assumption", "visage_silent_as_the_grave", "visage_summon_familiars"],
 			defaultCombo
 		)
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
+		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+	}
+
+	private onGameEnded(): void {
+		this.sleeper.Sleep(0)
+		this.familiarSleeper.Sleep(0)
+		this.summonSleeper.Sleep(0)
+		this.autoSoulSleeper.Sleep(0)
+		this.autoSaveSleeper.Sleep(0)
+		this.comboSequenceGrid = null
 	}
 
 	private get hasLocalHero() {
@@ -86,11 +158,7 @@ new (class VisageCombo {
 	private getControllableFamiliars(): npc_dota_visage_familiar[] {
 		const familiars: npc_dota_visage_familiar[] = []
 		for (const unit of EntityManager.GetEntitiesByClass(npc_dota_visage_familiar)) {
-			if (
-				unit.IsValid &&
-				unit.IsAlive &&
-				unit.IsControllable
-			) {
+			if (unit.IsValid && unit.IsAlive && unit.IsControllable) {
 				familiars.push(unit)
 			}
 		}
@@ -134,10 +202,7 @@ new (class VisageCombo {
 	 * Hanya 1 familiar drop stone form per tick.
 	 * Familiar terdekat target yang punya Stone Form ready akan digunakan.
 	 */
-	private executeStoneFormChainStun(
-		familiars: npc_dota_visage_familiar[],
-		target: Hero
-	): boolean {
+	private executeStoneFormChainStun(familiars: npc_dota_visage_familiar[], target: Hero): boolean {
 		if (this.familiarSleeper.Sleeping) {
 			return false
 		}
@@ -159,12 +224,7 @@ new (class VisageCombo {
 
 		for (const familiar of familiars) {
 			const stoneForm = familiar.GetAbilityByName("visage_summon_familiars_stone_form")
-			if (
-				stoneForm &&
-				stoneForm.IsValid &&
-				stoneForm.Level > 0 &&
-				stoneForm.Cooldown <= 0.1
-			) {
+			if (stoneForm && stoneForm.IsValid && stoneForm.Level > 0 && stoneForm.Cooldown <= 0.1) {
 				const dist = familiar.Distance2D(target)
 				if (dist < bestDist) {
 					bestDist = dist
@@ -204,10 +264,7 @@ new (class VisageCombo {
 	/**
 	 * Perintahkan semua familiar yang tidak sedang Stone Form untuk menyerang target.
 	 */
-	private orderFamiliarsAttack(
-		familiars: npc_dota_visage_familiar[],
-		target: Hero
-	): void {
+	private orderFamiliarsAttack(familiars: npc_dota_visage_familiar[], target: Hero): void {
 		for (const familiar of familiars) {
 			// Jangan perintahkan attack jika familiar sedang casting Stone Form
 			if (familiar.IsChanneling) {
@@ -257,15 +314,45 @@ new (class VisageCombo {
 	 * Trigger berdasarkan musuh terdekat dalam jarak cast range skill.
 	 */
 	private executeAutoSoulAssumption(hero: Hero): void {
-		if (!this.autoSoulEnabled.value || this.autoSoulSleeper.Sleeping || hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed) return
+		if (
+			!this.autoSoulEnabled.value ||
+			this.autoSoulSleeper.Sleeping ||
+			hero.IsChanneling ||
+			hero.IsStunned ||
+			hero.IsSilenced ||
+			hero.IsHexed
+		) {
+			return
+		}
 
 		const soulAssumption = hero.GetAbilityByName("visage_soul_assumption")
-		if (!soulAssumption || !soulAssumption.IsValid || soulAssumption.Level <= 0 || soulAssumption.Cooldown > 0.1 || hero.Mana < soulAssumption.ManaCost || this.getSoulAssumptionCharges(hero) < this.autoSoulMinCharges.value) return
+		if (
+			!soulAssumption ||
+			!soulAssumption.IsValid ||
+			soulAssumption.Level <= 0 ||
+			soulAssumption.Cooldown > 0.1 ||
+			hero.Mana < soulAssumption.ManaCost ||
+			this.getSoulAssumptionCharges(hero) < this.autoSoulMinCharges.value
+		) {
+			return
+		}
 
 		const castRange = soulAssumption.CastRange > 0 ? soulAssumption.CastRange : 900
-		const bestTarget = EntityManager.GetEntitiesByClass(Hero).find(e => e.IsValid && e.IsAlive && e.IsVisible && e.IsEnemy(hero) && !e.IsIllusion && !e.IsMagicImmune && !e.IsDebuffImmune && hero.Distance2D(e) <= castRange)
+		const bestTarget = EntityManager.GetEntitiesByClass(Hero).find(
+			e =>
+				e.IsValid &&
+				e.IsAlive &&
+				e.IsVisible &&
+				e.IsEnemy(hero) &&
+				!e.IsIllusion &&
+				!e.IsMagicImmune &&
+				!e.IsDebuffImmune &&
+				hero.Distance2D(e) <= castRange
+		)
 
-		if (!bestTarget) return
+		if (!bestTarget) {
+			return
+		}
 
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
@@ -276,7 +363,7 @@ new (class VisageCombo {
 			showEffects: true,
 			isPlayerInput: false
 		})
-		this.autoSoulSleeper.Sleep(GameState.InputLag * 1000 + (soulAssumption.CastPoint * 1000) + 100)
+		this.autoSoulSleeper.Sleep(GameState.InputLag * 1000 + soulAssumption.CastPoint * 1000 + 100)
 	}
 
 	/**
@@ -294,15 +381,33 @@ new (class VisageCombo {
 		// --- Visage Self Save ---
 		const visageHpPct = (hero.HP / hero.MaxHP) * 100
 		if (visageHpPct <= this.visageSaveHpPct.value) {
-			if (this.visageSaveGraveChill.value && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
+			if (
+				this.visageSaveGraveChill.value &&
+				!hero.IsChanneling &&
+				!hero.IsStunned &&
+				!hero.IsSilenced &&
+				!hero.IsHexed
+			) {
 				const graveChill = hero.GetAbilityByName("visage_grave_chill")
-				if (graveChill && graveChill.IsValid && graveChill.Level > 0 && graveChill.Cooldown <= 0.1 && hero.Mana >= graveChill.ManaCost) {
+				if (
+					graveChill &&
+					graveChill.IsValid &&
+					graveChill.Level > 0 &&
+					graveChill.Cooldown <= 0.1 &&
+					hero.Mana >= graveChill.ManaCost
+				) {
 					// Cast on nearest enemy to slow
 					let closestEnemy: Hero | undefined
 					let minDist = Infinity
 					const castRange = graveChill.CastRange > 0 ? graveChill.CastRange : 600
 					for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-						if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+						if (
+							enemy.IsValid &&
+							enemy.IsAlive &&
+							enemy.IsVisible &&
+							enemy.IsEnemy(hero) &&
+							!enemy.IsIllusion
+						) {
 							const dist = hero.Distance2D(enemy)
 							if (dist <= castRange && dist < minDist) {
 								minDist = dist
@@ -326,9 +431,22 @@ new (class VisageCombo {
 				}
 			}
 
-			if (this.visageSaveSilentGrave.value && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !hero.IsInvisible) {
+			if (
+				this.visageSaveSilentGrave.value &&
+				!hero.IsChanneling &&
+				!hero.IsStunned &&
+				!hero.IsSilenced &&
+				!hero.IsHexed &&
+				!hero.IsInvisible
+			) {
 				const silentGrave = hero.GetAbilityByName("visage_silent_as_the_grave")
-				if (silentGrave && silentGrave.IsValid && silentGrave.Level > 0 && silentGrave.Cooldown <= 0.1 && hero.Mana >= silentGrave.ManaCost) {
+				if (
+					silentGrave &&
+					silentGrave.IsValid &&
+					silentGrave.Level > 0 &&
+					silentGrave.Cooldown <= 0.1 &&
+					hero.Mana >= silentGrave.ManaCost
+				) {
 					ExecuteOrder.PrepareOrder({
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 						issuers: [hero],
@@ -343,9 +461,21 @@ new (class VisageCombo {
 			}
 
 			// Visage: Gravekeeper's Cloak (Aghanim's Shard) - Stone Form
-			if (this.visageSaveGravekeepersCloak.value && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
+			if (
+				this.visageSaveGravekeepersCloak.value &&
+				!hero.IsChanneling &&
+				!hero.IsStunned &&
+				!hero.IsSilenced &&
+				!hero.IsHexed
+			) {
 				const gravekeepersCloak = hero.GetAbilityByName("visage_gravekeepers_cloak")
-				if (gravekeepersCloak && gravekeepersCloak.IsValid && gravekeepersCloak.Level > 0 && gravekeepersCloak.Cooldown <= 0.1 && hero.Mana >= gravekeepersCloak.ManaCost) {
+				if (
+					gravekeepersCloak &&
+					gravekeepersCloak.IsValid &&
+					gravekeepersCloak.Level > 0 &&
+					gravekeepersCloak.Cooldown <= 0.1 &&
+					hero.Mana >= gravekeepersCloak.ManaCost
+				) {
 					ExecuteOrder.PrepareOrder({
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 						issuers: [hero],
@@ -354,7 +484,7 @@ new (class VisageCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
-					this.autoSaveSleeper.Sleep(GameState.InputLag * 1000 + (gravekeepersCloak.CastPoint * 1000) + 100)
+					this.autoSaveSleeper.Sleep(GameState.InputLag * 1000 + gravekeepersCloak.CastPoint * 1000 + 100)
 					return
 				}
 			}
@@ -590,9 +720,10 @@ new (class VisageCombo {
 						const dir = bestTarget.Position.Subtract(hero.Position)
 						const dist = dir.Length2D
 						const safeDist = hero.BaseAttackRange * (this.smartOrbWalkDistancePct.value / 100)
-						const movePos = dist > 0 
-							? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
-							: bestTarget.Position
+						const movePos =
+							dist > 0
+								? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
+								: bestTarget.Position
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
 							issuers: [hero],
@@ -627,9 +758,10 @@ new (class VisageCombo {
 					const dir = bestTarget.Position.Subtract(hero.Position)
 					const dist = dir.Length2D
 					const safeDist = hero.BaseAttackRange * (this.smartOrbWalkDistancePct.value / 100)
-					const movePos = dist > 0 
-						? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
-						: bestTarget.Position
+					const movePos =
+						dist > 0
+							? bestTarget.Position.Subtract(dir.Normalize().MultiplyScalar(safeDist))
+							: bestTarget.Position
 					ExecuteOrder.PrepareOrder({
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
 						issuers: [hero],

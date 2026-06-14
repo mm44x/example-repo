@@ -51,6 +51,14 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "bane_nightmare", label: "Nightmare", piercesBkb: false, castType: "target" },
 	{ name: "skywrath_mage_ancient_seal", label: "Ancient Seal", piercesBkb: false, castType: "target" },
 	{ name: "riki_smoke_screen", label: "Smoke Screen", piercesBkb: false, castType: "position", castRange: 550 },
+	{
+		name: "sniper_concussive_grenade",
+		label: "Concussive Grenade",
+		piercesBkb: false,
+		castType: "position",
+		castRange: 600
+	},
+	{ name: "drow_ranger_wave_of_silence", label: "Gust", piercesBkb: false, castType: "position", castRange: 900 },
 	{ name: "bane_fiends_grip", label: "Fiend's Grip", piercesBkb: true, castType: "target" },
 	{ name: "beastmaster_primal_roar", label: "Primal Roar", piercesBkb: true, castType: "target" },
 	{ name: "doom_bringer_doom", label: "Doom", piercesBkb: true, castType: "target" },

@@ -104,6 +104,35 @@ new (class RubickCombo {
 		InputEventSDK.on("MouseKeyDown", this.OnMouseKeyDown.bind(this))
 		InputEventSDK.on("MouseKeyUp", this.OnMouseKeyUp.bind(this))
 		EventsSDK.on("Draw", this.OnDraw.bind(this))
+		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+	}
+
+	private onGameEnded(): void {
+		this.sleeper.Sleep(0)
+		this.stealSleeper.Sleep(0)
+		this.autoStealGrid = null
+		this.autoCastGrid = null
+		this.comboSequenceGrid = null
+		this.isDraggingHud = false
+		this.dragSpellName = undefined
+		// Reinitialize grids for the next game
+		this.reinitializeGrids()
+	}
+
+	private reinitializeGrids(): void {
+		this.autoStealGrid = this.autoStealNode.AddDynamicImageSelector("Spells", [], new Map())
+		this.autoCastGrid = this.autoCastNode.AddDynamicImageSelector("Spells", [], new Map())
+
+		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
+		defaultCombo.set("rubick_telekinesis", [true, true, true, 0])
+		defaultCombo.set("rubick_fade_bolt", [true, true, true, 1])
+		defaultCombo.set("rubick_spell_steal", [true, true, true, 2])
+
+		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
+			"Combo Order",
+			["rubick_telekinesis", "rubick_fade_bolt", "rubick_spell_steal"],
+			defaultCombo
+		)
 	}
 
 	private IsAbilityVisibleOnHUD(abil: Ability | undefined): abil is Ability {
@@ -139,6 +168,7 @@ new (class RubickCombo {
 				hero.Mana >= stolenSpell.ManaCost &&
 				!isTargetImmune
 			) {
+				if (!this.autoCastGrid) return false
 				if (this.autoCastGrid.IsEnabled(stolenSpell.Name)) {
 					const isTarget = stolenSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
 					const isPosition = stolenSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
@@ -201,6 +231,11 @@ new (class RubickCombo {
 			return
 		}
 
+		// Ensure grids are initialized
+		if (!this.autoStealGrid || !this.autoCastGrid || !this.comboSequenceGrid) {
+			return
+		}
+
 		// ------------------ FLOATING HUD PANEL DRAGGING ------------------
 		if (this.autoStealHudEnabled.value && this.isDraggingHud) {
 			const cursorPos = InputManager.CursorOnScreen
@@ -216,7 +251,7 @@ new (class RubickCombo {
 			let visibleIndex = 0
 			for (const abil of hero.Spells) {
 				if (this.IsAbilityVisibleOnHUD(abil)) {
-					if (this.autoCastGrid.values.includes(abil.Name) && this.autoCastGrid.IsEnabled(abil.Name)) {
+					if (this.autoCastGrid && this.autoCastGrid.values.includes(abil.Name) && this.autoCastGrid.IsEnabled(abil.Name)) {
 						if (visibleIndex < hud.AbilitiesRects.length) {
 							const rect = this.getAdjustedRect(hud.AbilitiesRects[visibleIndex])
 
@@ -262,6 +297,7 @@ new (class RubickCombo {
 
 		// ------------------ FLOATING HUD PANEL ------------------
 		if (this.autoStealHudEnabled.value) {
+			if (!this.autoStealGrid) return
 			const values = this.autoStealGrid.values
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
@@ -399,6 +435,7 @@ new (class RubickCombo {
 
 		// ------------------ FLOATING HUD PANEL CLICK INTERACTION ------------------
 		if (this.autoStealHudEnabled.value) {
+			if (!this.autoStealGrid) return
 			const values = this.autoStealGrid.values
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
@@ -452,10 +489,12 @@ new (class RubickCombo {
 						if (isCtrlHeld) {
 							this.dragSpellName = spellName
 						} else {
-							const enabledValues = this.autoStealGrid.enabledValues.get(spellName)
-							if (enabledValues) {
-								enabledValues[0] = !enabledValues[0]
-								Menu.Base.SaveConfigASAP = true
+							if (this.autoStealGrid) {
+								const enabledValues = this.autoStealGrid.enabledValues.get(spellName)
+								if (enabledValues) {
+									enabledValues[0] = !enabledValues[0]
+									Menu.Base.SaveConfigASAP = true
+								}
 							}
 						}
 						break
@@ -491,7 +530,7 @@ new (class RubickCombo {
 			for (const abil of hero.Spells) {
 				if (this.IsAbilityVisibleOnHUD(abil)) {
 					if (visibleIndex === clickedIndex) {
-						if (this.autoCastGrid.values.includes(abil.Name)) {
+						if (this.autoCastGrid && this.autoCastGrid.values.includes(abil.Name)) {
 							const enabledValues = this.autoCastGrid.enabledValues.get(abil.Name)
 							if (enabledValues) {
 								enabledValues[0] = !enabledValues[0]
@@ -524,6 +563,11 @@ new (class RubickCombo {
 				this.dragSpellName = undefined
 
 				if (this.autoStealHudEnabled.value) {
+					// Ensure autoStealGrid is initialized
+					if (!this.autoStealGrid) {
+						return true
+					}
+
 					const values = this.autoStealGrid.values
 					const iconSize = this.autoStealHudIconSize.value
 					const gap = 6
@@ -643,6 +687,7 @@ new (class RubickCombo {
 
 		const spellName = ability.Name
 
+		if (!this.autoStealGrid) return
 		if (this.autoStealGrid.IsEnabled(spellName)) {
 			const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
 			if (
@@ -722,6 +767,11 @@ new (class RubickCombo {
 			return
 		}
 
+		// Ensure grids are initialized
+		if (!this.autoStealGrid || !this.autoCastGrid || !this.comboSequenceGrid) {
+			return
+		}
+
 		// Secara dinamis mendaftarkan spell musuh ke dalam menu Auto Steal
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
 			if (enemy && enemy.IsValid && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
@@ -786,6 +836,7 @@ new (class RubickCombo {
 		let stolenSpellsExecuted = false
 
 		// Urutan combo dinamis dari grid selector
+		if (!this.comboSequenceGrid) return
 		for (const spellName of this.comboSequenceGrid.values) {
 			if (!this.comboSequenceGrid.IsEnabled(spellName)) {
 				continue

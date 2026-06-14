@@ -18,7 +18,9 @@ import {
 	ProjectileManager,
 	TickSleeper,
 	Tower,
-	Unit
+	Unit,
+	UnitData,
+	WorldUtils
 } from "github.com/octarine-public/wrapper/index"
 
 const lastHitSleeper = new TickSleeper()
@@ -48,14 +50,26 @@ class CustomLastHit {
 	private readonly aggressiveHarass = this.harassNode.AddToggle("Aggressive Harass (Ignore aggro/tower)", false)
 	private readonly harassSearchRadius = this.harassNode.AddSlider("Harass Search Radius", 800, 300, 1500)
 
+	// Track attack timing for more accurate predictions
+	private readonly unitAttackRecords = new Map<number, { lastAttackTime: number; attackCount: number }>()
 	private readonly unitTargets = new Map<number, number>()
 	private readonly pSDK = new ParticlesSDK()
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
+		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+	}
+
+	private onGameEnded(): void {
+		this.unitTargets.clear()
+		this.unitAttackRecords.clear()
+		lastHitSleeper.Sleep(0)
+		this.pSDK.DestroyAll()
 	}
 
 	private updateUnitTargets(): void {
+		const currentTime = GameState.RawGameTime
+		
 		// Clean up invalid entities from the tracking map
 		for (const [attackerIndex, targetIndex] of this.unitTargets.entries()) {
 			const attacker = EntityManager.EntityByIndex<Unit>(attackerIndex)
@@ -70,6 +84,18 @@ class CustomLastHit {
 		for (const proj of projectiles) {
 			if (proj.IsValid && !proj.IsDodged && proj.Source && proj.Target && proj.Target instanceof Creep) {
 				this.unitTargets.set(proj.Source.Index, proj.Target.Index)
+				
+				// Track attack timing for better prediction
+				const record = this.unitAttackRecords.get(proj.Source.Index) || { lastAttackTime: 0, attackCount: 0 }
+				if (record.lastAttackTime > 0) {
+					const timeSinceLastAttack = currentTime - record.lastAttackTime
+					// If attack interval matches expected attack speed, record it
+					if (timeSinceLastAttack > 0.1) {
+						record.attackCount++
+					}
+				}
+				record.lastAttackTime = currentTime
+				this.unitAttackRecords.set(proj.Source.Index, record)
 			}
 		}
 
@@ -87,7 +113,55 @@ class CustomLastHit {
 	}
 
 	private predictCreepHealth(hero: Hero, creep: Creep, landTime: number): number {
+		const currentTime = GameState.RawServerTime
+		const timeDelta = Math.max(0, landTime - currentTime)
 		let predictedHP = creep.HP
+
+		// Account for HP regeneration over time
+		// Creeps regen ~0.5-2 HP/sec normally, more with aura effects
+		if (timeDelta > 0) {
+			const hpRegen = creep.HPRegen || 0
+			predictedHP += hpRegen * timeDelta
+		}
+
+		// Helper to calculate actual damage after armor/block
+		const calculateActualDamage = (source: Unit, target: Creep, rawDamage: number): number => {
+			if (!source || !target || !target.IsValid) return rawDamage
+
+			// Get target armor (creeps have base armor from UnitData)
+			const targetArmor = target.ArmorPhysical || 0
+
+			// Standard Dota armor formula (handles both positive and negative armor)
+			let armorMultiplier: number
+			if (targetArmor >= 0) {
+				armorMultiplier = 1 / (1 + 0.06 * targetArmor)
+			} else {
+				// For negative armor: damage_multiplier = 2 - 0.94^(-armor)
+				armorMultiplier = 2 - Math.pow(0.94, -targetArmor)
+			}
+
+			// Damage block from Stout Shield / Vanguard / etc (approximate for creeps)
+			// Lane creeps have small innate block, siege creeps have more
+			let damageBlock = 0
+			const unitData = target.UnitData
+			if (unitData) {
+				// Check if it's a ranged/siege creep which typically have more armor/block
+				const name = unitData.Name?.toLowerCase() || ""
+				if (name.includes("siege") || name.includes("ranged")) {
+					damageBlock = 2 // siege/ranged creeps have slight block
+				} else {
+					damageBlock = 1 // melee creeps have minimal block
+				}
+			}
+
+			// Apply armor multiplier
+			let actualDamage = rawDamage * armorMultiplier
+
+			// Apply damage block (only for physical attacks)
+			actualDamage = Math.max(1, actualDamage - damageBlock)
+
+			return actualDamage
+		}
 
 		// 1. Account for in-flight projectiles
 		const projectiles = ProjectileManager.AllTrackingProjectiles
@@ -102,19 +176,21 @@ class CustomLastHit {
 			const dist = creep.Distance2D(proj.Position)
 			const speed = proj.Speed > 0 ? proj.Speed : 1000
 			const timeToImpact = dist / speed
-			const projLandTime = GameState.RawServerTime + timeToImpact
+			const projLandTime = currentTime + timeToImpact
 
 			if (projLandTime <= landTime) {
-				if (source instanceof Unit) {
-					const damage = source.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
-					predictedHP -= damage
+				if (source instanceof Unit && source.IsValid) {
+					const rawDamage = source.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
+					const actualDamage = calculateActualDamage(source, creep, rawDamage)
+					predictedHP -= actualDamage
 				}
 			}
 		}
 
-		// 2. Account for future attacks from units targeting the creep
+		// 2. Account for future attacks from units & towers targeting the creep
 		const allUnits = EntityManager.GetEntitiesByClass(Unit)
 		for (const unit of allUnits) {
+			// Skip invalid, dead, invisible units and our hero
 			if (!unit.IsValid || !unit.IsAlive || !unit.IsVisible || unit.Index === hero.Index || unit.IsDisarmed) {
 				continue
 			}
@@ -130,8 +206,10 @@ class CustomLastHit {
 				continue
 			}
 
-			// Ensure unit is within attack range
-			const maxRange = unit.GetAttackRange(creep) + 150
+			// Ensure unit is within attack range (towers have much larger range)
+			const maxRange = unit.IsTower
+				? unit.GetAttackRange(creep) + 100
+				: unit.GetAttackRange(creep) + 150
 			if (unit.Distance2D(creep) > maxRange) {
 				continue
 			}
@@ -142,11 +220,11 @@ class CustomLastHit {
 
 			if (isInAnimation) {
 				const remainingTime = unit.LastAnimationStartTime + unit.LastAnimationCastPoint - GameState.RawGameTime
-				nextFireTime = GameState.RawServerTime + Math.max(0, remainingTime)
+				nextFireTime = currentTime + Math.max(0, remainingTime)
 			} else {
 				nextFireTime = Math.max(
 					unit.AttackTimeAtLastTick + unit.SecondsPerAttack,
-					GameState.RawServerTime + unit.GetNextAttackPoint(0)
+					currentTime + unit.GetNextAttackPoint(0)
 				)
 			}
 
@@ -156,16 +234,18 @@ class CustomLastHit {
 				: 0
 
 			let currentUnitLandTime = nextFireTime + travelTime
-			const secondsPerAttack = Math.max(0.1, unit.SecondsPerAttack > 0 ? unit.SecondsPerAttack : 1.5)
+			// Towers attack faster than creeps (usually 1.0 BAT for towers vs 1.5-1.7 for creeps)
+			const secondsPerAttack = Math.max(unit.IsTower ? 0.8 : 0.1, unit.SecondsPerAttack > 0 ? unit.SecondsPerAttack : 1.5)
 
 			while (currentUnitLandTime <= landTime) {
-				const damage = unit.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
-				predictedHP -= damage
+				const rawDamage = unit.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
+				const actualDamage = calculateActualDamage(unit, creep, rawDamage)
+				predictedHP -= actualDamage
 				currentUnitLandTime += secondsPerAttack
 			}
 		}
 
-		return predictedHP
+		return Math.max(0, predictedHP)
 	}
 
 	private updateAttackRangeDraw(hero: Hero): void {
@@ -242,12 +322,30 @@ class CustomLastHit {
 		for (const creep of creeps) {
 			const turnTime = hero.TurnTimeNew(creep.Position, false)
 			const attackPoint = hero.GetNextAttackPoint(GameState.InputLag)
-			const projectileTravelTime = hero.IsRanged ? hero.Distance2D(creep) / hero.AttackProjectileSpeed : 0
-			const landTime =
-				GameState.RawServerTime + GameState.InputLag + turnTime + attackPoint + projectileTravelTime
 
+			// Calculate when our attack will land
+			const landTime = GameState.RawServerTime + GameState.InputLag + turnTime + attackPoint
+
+			// Predict creep HP at land time using our helper (which accounts for armor/block from other units)
 			const predictedHP = this.predictCreepHealth(hero, creep, landTime)
-			const attackDamage = hero.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
+
+			// Calculate our actual attack damage after armor reduction and damage block
+			const rawAttackDamage = hero.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
+
+			// Apply armor reduction and damage block for OUR attack on this creep
+			const targetArmor = creep.ArmorPhysical || 0
+			const armorReduction = targetArmor * 0.06 / (1 + targetArmor * 0.06)
+			let damageBlock = 0
+			const unitData = creep.UnitData
+			if (unitData) {
+				const name = unitData.Name?.toLowerCase() || ""
+				if (name.includes("siege") || name.includes("ranged")) {
+					damageBlock = 2
+				} else {
+					damageBlock = 1
+				}
+			}
+			const attackDamage = Math.max(1, rawAttackDamage * (1 - armorReduction) - damageBlock)
 
 			if (creep.IsEnemy(hero)) {
 				if (predictedHP <= attackDamage && predictedHP > 0) {
