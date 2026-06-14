@@ -11,6 +11,7 @@ import {
 	ProjectileManager,
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
+import { claimOrder } from "./coordination"
 
 const FATAL_MODIFIERS = [
 	"modifier_legion_commander_duel",
@@ -57,6 +58,7 @@ const THREAT_MODIFIERS = [
 	"modifier_bounty_hunter_track",
 	"modifier_slardar_corrosive_haze",
 	"modifier_spirit_breaker_charge_of_darkness_vision",
+	"modifier_bane_nightmare",
 	"modifier_stunned",
 	"modifier_hexed",
 	"modifier_silence"
@@ -80,7 +82,13 @@ const THREAT_ABILITIES = [
 	"slardar_corrosive_haze",
 	"bounty_hunter_track",
 	"spirit_breaker_charge_of_darkness",
-	"legion_commander_duel"
+	"legion_commander_duel",
+	"bane_nightmare",
+	"invoker_chaos_meteor",
+	"invoker_deafening_blast",
+	"invoker_sun_strike",
+	"lina_laguna_blade",
+	"skywrath_mage_mystic_flare"
 ]
 
 const THREAT_ITEMS = ["item_orchid", "item_bloodthorn", "item_sheepstick", "item_abyssal_blade", "item_nullifier"]
@@ -135,7 +143,12 @@ const MAGIC_THREAT_ABILITIES = [
 	"item_orchid",
 	"item_bloodthorn",
 	"item_sheepstick",
-	"item_nullifier"
+	"item_nullifier",
+	"lina_laguna_blade",
+	"skywrath_mage_mystic_flare",
+	"invoker_chaos_meteor",
+	"invoker_sun_strike",
+	"invoker_deafening_blast"
 ]
 
 const MAGIC_THREAT_MODIFIERS = [
@@ -170,14 +183,16 @@ new (class AutoSaveUtility {
 			"ringmaster_the_box",
 			"shadow_demon_disruption",
 			"vengefulspirit_nether_swap",
-			"pugna_decrepify"
+			"pugna_decrepify",
+			"nyx_assassin_spiked_carapace"
 		],
 		new Map([
 			["dazzle_shallow_grave", true],
 			["ringmaster_the_box", true],
 			["shadow_demon_disruption", true],
 			["vengefulspirit_nether_swap", true],
-			["pugna_decrepify", true]
+			["pugna_decrepify", true],
+			["nyx_assassin_spiked_carapace", true]
 		]),
 		"Enable or disable specific hero spells for saving",
 		true
@@ -197,7 +212,8 @@ new (class AutoSaveUtility {
 			"item_mekansm",
 			"item_guardian_greaves",
 			"item_cyclone",
-			"item_manta"
+			"item_manta",
+			"item_aeon_disk"
 		],
 		new Map([
 			["item_lotus_orb", true],
@@ -205,7 +221,8 @@ new (class AutoSaveUtility {
 			["item_mekansm", true],
 			["item_guardian_greaves", true],
 			["item_cyclone", true],
-			["item_manta", true]
+			["item_manta", true],
+			["item_aeon_disk", true]
 		]),
 		"Enable or disable specific items for saving",
 		true
@@ -254,6 +271,12 @@ new (class AutoSaveUtility {
 	private readonly mantaOnlyDanger = this.mantaNode.AddToggle("Only Save if in Danger", true)
 
 	private readonly castSleeper = new TickSleeper()
+
+	private executeAndClaimOrder(castFn: () => void, delay: number): void {
+		castFn()
+		claimOrder()
+		this.castSleeper.Sleep(delay)
+	}
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
@@ -313,7 +336,8 @@ new (class AutoSaveUtility {
 			"modifier_troll_warlord_battle_trance_ally",
 			"modifier_ringmaster_the_box_buff",
 			"modifier_shadow_demon_disruption",
-			"modifier_obsidian_destroyer_astral_imprisonment"
+			"modifier_obsidian_destroyer_astral_imprisonment",
+			"modifier_nyx_assassin_spiked_carapace"
 		]
 		return saveModifiers.some(mod => unit.HasBuffByName(mod))
 	}
@@ -347,7 +371,7 @@ new (class AutoSaveUtility {
 				h &&
 				h.IsValid &&
 				h.IsAlive &&
-				h.IsEnemy(localHero) &&
+				h.IsEnemy(unit) &&
 				!h.IsIllusion &&
 				(unit.Distance2D(h, true) <= 1000 ||
 					(h.IsAttacking && h.Distance2D(unit, true) <= h.GetAttackRange(unit) + 200))
@@ -356,7 +380,27 @@ new (class AutoSaveUtility {
 	}
 
 	private hasActiveThreatModifier(target: Hero): boolean {
-		return THREAT_MODIFIERS.some(mod => target.HasBuffByName(mod))
+		return THREAT_MODIFIERS.some(mod => {
+			if (mod === "modifier_spirit_breaker_charge_of_darkness_vision") {
+				if (!target.HasBuffByName(mod)) {
+					return false
+				}
+				const sb = EntityManager.GetEntitiesByClass(Hero).find(
+					h =>
+						h &&
+						h.IsValid &&
+						h.IsAlive &&
+						h.IsEnemy(target) &&
+						h.Name === "npc_dota_hero_spirit_breaker" &&
+						!h.IsIllusion
+				)
+				if (sb && sb.Distance2D(target, true) > 1000) {
+					return false
+				}
+				return true
+			}
+			return target.HasBuffByName(mod)
+		})
 	}
 
 	private isAboutToBeTargetedByThreat(target: Hero, allHeroes: Hero[]): boolean {
@@ -381,9 +425,36 @@ new (class AutoSaveUtility {
 						(THREAT_ABILITIES.includes(abil.Name) || THREAT_ITEMS.includes(abil.Name))
 					) {
 						if (enemy.FindRotationAngle(target) < 0.25) {
-							const castRange = abil.CastRange > 0 ? abil.CastRange : 600
+							let castRange = abil.CastRange > 0 ? abil.CastRange : 600
+							if (abil.Name === "spirit_breaker_charge_of_darkness") {
+								castRange = 1000
+							}
 							if (enemy.Distance2D(target, true) <= castRange + 150) {
 								return true
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Detect ready instant-cast threats (hex, orchid, abyssal, etc.) without projectile/phase
+		for (const enemy of allHeroes) {
+			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
+				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
+				const items = enemy.HasInventory ? enemy.Items.filter((i): i is Item => i !== undefined) : []
+				const abilities = [...spells, ...items]
+
+				for (const abil of abilities) {
+					if (INSTANT_REFLECTABLE_SPELLS.includes(abil.Name)) {
+						const isReady =
+							(abil.Level > 0 || abil instanceof Item) && abil.Cooldown <= 0.1 && enemy.IsManaEnough(abil)
+						if (isReady) {
+							if (enemy.FindRotationAngle(target) < 0.15) {
+								const castRange = abil.CastRange > 0 ? abil.CastRange : 600
+								if (enemy.Distance2D(target, true) <= castRange + 50) {
+									return true
+								}
 							}
 						}
 					}
@@ -412,7 +483,10 @@ new (class AutoSaveUtility {
 				for (const abil of abilities) {
 					if (abil.IsInAbilityPhase && REFLECTABLE_SPELLS.includes(abil.Name)) {
 						if (enemy.FindRotationAngle(target) < 0.25) {
-							const castRange = abil.CastRange > 0 ? abil.CastRange : 600
+							let castRange = abil.CastRange > 0 ? abil.CastRange : 600
+							if (abil.Name === "spirit_breaker_charge_of_darkness") {
+								castRange = 1000
+							}
 							if (enemy.Distance2D(target, true) <= castRange + 150) {
 								return true
 							}
@@ -580,6 +654,19 @@ new (class AutoSaveUtility {
 			return Axe
 		}
 
+		const SB = allHeroes.find(
+			h =>
+				h &&
+				h.IsValid &&
+				h.IsAlive &&
+				h.IsEnemy(target) &&
+				h.Name === "npc_dota_hero_spirit_breaker" &&
+				!h.IsIllusion
+		)
+		if (target.HasBuffByName("modifier_spirit_breaker_charge_of_darkness_vision") && SB) {
+			return SB
+		}
+
 		for (const enemy of allHeroes) {
 			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
 				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
@@ -694,8 +781,7 @@ new (class AutoSaveUtility {
 						)
 					) {
 						if (hero.Distance2D(target, true) <= castRange) {
-							hero.CastTarget(grave, target)
-							this.castSleeper.Sleep(delay)
+							this.executeAndClaimOrder(() => hero.CastTarget(grave, target), delay)
 							return
 						}
 					}
@@ -728,8 +814,7 @@ new (class AutoSaveUtility {
 						)
 					) {
 						if (hero.Distance2D(target, true) <= castRange) {
-							hero.CastTarget(box, target)
-							this.castSleeper.Sleep(delay)
+							this.executeAndClaimOrder(() => hero.CastTarget(box, target), delay)
 							return
 						}
 					}
@@ -768,8 +853,7 @@ new (class AutoSaveUtility {
 						)
 					) {
 						if (hero.Distance2D(target, true) <= castRange) {
-							hero.CastTarget(disruption, target)
-							this.castSleeper.Sleep(delay)
+							this.executeAndClaimOrder(() => hero.CastTarget(disruption, target), delay)
 							return
 						}
 					}
@@ -807,8 +891,7 @@ new (class AutoSaveUtility {
 						)
 					) {
 						if (hero.Distance2D(target, true) <= castRange) {
-							hero.CastTarget(swap, target)
-							this.castSleeper.Sleep(delay)
+							this.executeAndClaimOrder(() => hero.CastTarget(swap, target), delay)
 							return
 						}
 					}
@@ -863,8 +946,7 @@ new (class AutoSaveUtility {
 						)
 					) {
 						if (hero.Distance2D(target, true) <= castRange) {
-							hero.CastTarget(decrepify, target)
-							this.castSleeper.Sleep(delay)
+							this.executeAndClaimOrder(() => hero.CastTarget(decrepify, target), delay)
 							return
 						}
 					}
@@ -872,7 +954,41 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 6. Ethereal Blade Logic
+		// 6. Nyx Assassin Spiked Carapace Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("nyx_assassin_spiked_carapace") &&
+			hero.Name === "npc_dota_hero_nyx_assassin" &&
+			!hero.IsSilenced &&
+			!hero.IsStunned &&
+			!hero.IsHexed
+		) {
+			const carapace = hero.GetAbilityByName("nyx_assassin_spiked_carapace")
+			if (
+				carapace &&
+				carapace.IsValid &&
+				carapace.Level > 0 &&
+				carapace.Cooldown <= 0.1 &&
+				hero.IsManaEnough(carapace)
+			) {
+				if (
+					!hero.HasBuffByName("modifier_nyx_assassin_spiked_carapace") &&
+					this.shouldSaveTarget(
+						hero,
+						allHeroes,
+						hero,
+						this.heroMinHP.value,
+						this.heroOnlyDanger.value,
+						this.heroLowHP.value,
+						this.heroFatal.value
+					)
+				) {
+					this.executeAndClaimOrder(() => hero.CastNoTarget(carapace), delay)
+					return
+				}
+			}
+		}
+
+		// 7. Ethereal Blade Logic
 		if (this.itemsSelector.IsEnabled("item_ethereal_blade") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const eblade = hero.GetItemByName("item_ethereal_blade")
 			if (eblade && eblade.CanBeUsable && eblade.Cooldown <= 0.1 && hero.IsManaEnough(eblade)) {
@@ -932,8 +1048,7 @@ new (class AutoSaveUtility {
 										b.Name === "modifier_pugna_decrepify"
 								)
 								if (!isCasterEthereal && hero.Distance2D(caster, true) <= castRange) {
-									hero.CastTarget(eblade, caster)
-									this.castSleeper.Sleep(delay)
+									this.executeAndClaimOrder(() => hero.CastTarget(eblade, caster), delay)
 									return
 								}
 							}
@@ -945,8 +1060,7 @@ new (class AutoSaveUtility {
 						// Prevent EBlade on ally if under or targeted by magic threat
 						if (!this.isUnderOrTargetedByMagicThreat(target, allHeroes)) {
 							if (hero.Distance2D(target, true) <= castRange) {
-								hero.CastTarget(eblade, target)
-								this.castSleeper.Sleep(delay)
+								this.executeAndClaimOrder(() => hero.CastTarget(eblade, target), delay)
 								return
 							}
 						}
@@ -955,7 +1069,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 7. Lotus Orb Logic
+		// 8. Lotus Orb Logic
 		if (this.itemsSelector.IsEnabled("item_lotus_orb") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const lotus = hero.GetItemByName("item_lotus_orb")
 			if (lotus && lotus.CanBeUsable && lotus.Cooldown <= 0.1 && hero.IsManaEnough(lotus)) {
@@ -969,7 +1083,27 @@ new (class AutoSaveUtility {
 					let shouldLotus = false
 
 					if (this.lotusDebuffs.value) {
-						const hasTrackOrHaze = LOTUS_DEBUFFS.some(mod => target.HasBuffByName(mod))
+						const hasTrackOrHaze = LOTUS_DEBUFFS.some(mod => {
+							if (mod === "modifier_spirit_breaker_charge_of_darkness_vision") {
+								if (!target.HasBuffByName(mod)) {
+									return false
+								}
+								const sb = allHeroes.find(
+									h =>
+										h &&
+										h.IsValid &&
+										h.IsAlive &&
+										h.IsEnemy(target) &&
+										h.Name === "npc_dota_hero_spirit_breaker" &&
+										!h.IsIllusion
+								)
+								if (sb && sb.Distance2D(target, true) > 1000) {
+									return false
+								}
+								return true
+							}
+							return target.HasBuffByName(mod)
+						})
 						if (hasTrackOrHaze) {
 							shouldLotus = true
 						}
@@ -994,8 +1128,7 @@ new (class AutoSaveUtility {
 							!this.lotusOnlyDanger.value || this.isTargetInDanger(target, 100, true, allHeroes, hero)
 						if (inDanger) {
 							if (hero.Distance2D(target, true) <= castRange) {
-								hero.CastTarget(lotus, target)
-								this.castSleeper.Sleep(delay)
+								this.executeAndClaimOrder(() => hero.CastTarget(lotus, target), delay)
 								return
 							}
 						}
@@ -1004,7 +1137,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 8. Mekansm Logic
+		// 9. Mekansm Logic
 		if (this.itemsSelector.IsEnabled("item_mekansm") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const mek = hero.GetItemByName("item_mekansm")
 			if (mek && mek.CanBeUsable && mek.Cooldown <= 0.1 && hero.IsManaEnough(mek)) {
@@ -1028,14 +1161,13 @@ new (class AutoSaveUtility {
 				})
 
 				if (hasAllyInDanger) {
-					hero.CastNoTarget(mek)
-					this.castSleeper.Sleep(delay)
+					this.executeAndClaimOrder(() => hero.CastNoTarget(mek), delay)
 					return
 				}
 			}
 		}
 
-		// 9. Guardian Greaves Logic
+		// 10. Guardian Greaves Logic
 		if (
 			this.itemsSelector.IsEnabled("item_guardian_greaves") &&
 			!hero.IsMuted &&
@@ -1046,7 +1178,10 @@ new (class AutoSaveUtility {
 			if (greaves && greaves.CanBeUsable && greaves.Cooldown <= 0.1) {
 				// 1. Check if we need to auto-dispel self
 				let shouldCastGreaves = false
-				if (this.greavesAutoDispel.value && (hero.IsSilenced || hero.IsRooted)) {
+				if (
+					this.greavesAutoDispel.value &&
+					(hero.IsSilenced || hero.IsRooted)
+				) {
 					shouldCastGreaves = true
 				}
 
@@ -1073,14 +1208,13 @@ new (class AutoSaveUtility {
 				}
 
 				if (shouldCastGreaves) {
-					hero.CastNoTarget(greaves)
-					this.castSleeper.Sleep(delay)
+					this.executeAndClaimOrder(() => hero.CastNoTarget(greaves), delay)
 					return
 				}
 			}
 		}
 
-		// 10. Eul's / Wind Waker Logic
+		// 11. Eul's / Wind Waker Logic
 		if (this.itemsSelector.IsEnabled("item_cyclone") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const ww = hero.GetItemByName("item_wind_waker")
 			const eul = hero.GetItemByName("item_cyclone")
@@ -1106,8 +1240,7 @@ new (class AutoSaveUtility {
 					)
 					const isSelfCycloned = hero.HasBuffByName("modifier_euler_cyclone")
 					if (selfInDanger && !isSelfCycloned && !this.hasActiveSaveOrImmunity(hero)) {
-						hero.CastTarget(cycloneItem, hero)
-						this.castSleeper.Sleep(delay)
+						this.executeAndClaimOrder(() => hero.CastTarget(cycloneItem, hero), delay)
 						return
 					}
 				}
@@ -1130,8 +1263,7 @@ new (class AutoSaveUtility {
 								!enemyCaster.HasBuffByName("modifier_euler_cyclone")
 							) {
 								if (hero.Distance2D(enemyCaster, true) <= castRange) {
-									hero.CastTarget(cycloneItem, enemyCaster)
-									this.castSleeper.Sleep(delay)
+									this.executeAndClaimOrder(() => hero.CastTarget(cycloneItem, enemyCaster), delay)
 									return
 								}
 							}
@@ -1164,8 +1296,7 @@ new (class AutoSaveUtility {
 
 						if (isFatal || isHPDanger) {
 							if (hero.Distance2D(target, true) <= castRange) {
-								hero.CastTarget(cycloneItem, target)
-								this.castSleeper.Sleep(delay)
+								this.executeAndClaimOrder(() => hero.CastTarget(cycloneItem, target), delay)
 								return
 							}
 						}
@@ -1174,7 +1305,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 11. Manta Style Logic
+		// 12. Manta Style Logic
 		if (this.itemsSelector.IsEnabled("item_manta") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const manta = hero.GetItemByName("item_manta")
 			if (manta && manta.CanBeUsable && manta.Cooldown <= 0.1 && hero.IsManaEnough(manta)) {
@@ -1198,12 +1329,19 @@ new (class AutoSaveUtility {
 					}
 				}
 
+				// 3. Dispel fatal debuffs / active threats (stun, hex, silence, track, etc.)
+				if (!shouldCastManta) {
+					if (this.hasFatalDebuff(hero) || this.hasActiveThreatModifier(hero)) {
+						shouldCastManta = true
+					}
+				}
+
 				if (shouldCastManta) {
 					const inDanger =
 						!this.mantaOnlyDanger.value || this.isTargetInDanger(hero, 100, true, allHeroes, hero)
 					if (inDanger) {
-						hero.CastNoTarget(manta)
-						this.castSleeper.Sleep(delay)
+						this.executeAndClaimOrder(() => hero.CastNoTarget(manta), delay)
+						return
 					}
 				}
 			}
