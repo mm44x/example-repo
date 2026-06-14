@@ -3,6 +3,7 @@ import {
 	DOTAGameState,
 	EventsSDK,
 	GameRules,
+	GameState,
 	Menu,
 	UnitData
 } from "github.com/octarine-public/wrapper/index"
@@ -23,7 +24,7 @@ new (class AutoBanUtility {
 	private universalSelector?: Menu.ImageSelector
 
 	private populated = false
-	private lastBanPhaseState = false
+	private lastUpdateTime = 0
 
 	constructor() {
 		EventsSDK.on("UnitAbilityDataUpdated", this.populateAndRefresh.bind(this))
@@ -39,8 +40,18 @@ new (class AutoBanUtility {
 		this.populateAndRefresh()
 	}
 
+	private isSelectionState(state: DOTAGameState): boolean {
+		return (
+			state === DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION ||
+			state === DOTAGameState.DOTA_GAMERULES_STATE_PLAYER_DRAFT ||
+			state === DOTAGameState.DOTA_GAMERULES_STATE_CUSTOM_GAME_SETUP ||
+			state === DOTAGameState.DOTA_GAMERULES_STATE_STRATEGY_TIME
+		)
+	}
+
 	private onGameStateChanged(state: DOTAGameState): void {
-		if (state === DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION) {
+		console.log(`[AutoBan] GameStateChanged: ${state}`)
+		if (this.isSelectionState(state)) {
 			this.updateBans()
 		}
 	}
@@ -49,17 +60,20 @@ new (class AutoBanUtility {
 		if (delta === 0) {
 			return
 		}
-		const isBanPhase = GameRules?.IsBanPhase ?? false
-		if (isBanPhase !== this.lastBanPhaseState) {
-			this.lastBanPhaseState = isBanPhase
-			if (isBanPhase) {
+		const state = GameRules?.GameState
+		if (state !== undefined && this.isSelectionState(state)) {
+			const now = Date.now()
+			if (now - this.lastUpdateTime > 1000) {
+				// change from 200ms to 1000ms to avoid log spam
+				this.lastUpdateTime = now
 				this.updateBans()
 			}
 		}
 	}
 
 	private onGameEnded(): void {
-		this.lastBanPhaseState = false
+		console.log("[AutoBan] GameEnded")
+		this.lastUpdateTime = 0
 	}
 
 	private populateAndRefresh(): void {
@@ -122,11 +136,20 @@ new (class AutoBanUtility {
 		}
 
 		this.populated = true
+		console.log("[AutoBan] Populated selectors")
 		this.updateBans()
 	}
 
 	private updateBans(): void {
+		const isDedicated = GameState.IsDedicatedServer
+		const gameState = GameRules?.GameState
+		const gameMode = GameRules?.GameMode
+		const isBanPhase = GameRules?.IsBanPhase
+
 		if (!this.enabled.value) {
+			console.log(
+				`[AutoBan] Disabled. isDedicated=${isDedicated}, gameState=${gameState}, gameMode=${gameMode}, isBanPhase=${isBanPhase}`
+			)
 			ToggleBanHeroes(false)
 			return
 		}
@@ -151,6 +174,12 @@ new (class AutoBanUtility {
 		addSelectedHeroIds(this.agilitySelector)
 		addSelectedHeroIds(this.intellectSelector)
 		addSelectedHeroIds(this.universalSelector)
+
+		console.log(
+			`[AutoBan] updateBans: isDedicated=${isDedicated}, gameState=${gameState}, gameMode=${gameMode}, isBanPhase=${isBanPhase}, bannedHeroIds=[${bannedHeroIds.join(
+				", "
+			)}]`
+		)
 
 		if (bannedHeroIds.length > 0) {
 			ToggleBanHeroes(bannedHeroIds)

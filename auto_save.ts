@@ -191,13 +191,21 @@ new (class AutoSaveUtility {
 	private readonly itemsNode = this.node.AddNode("Items")
 	private readonly itemsSelector = this.itemsNode.AddImageSelector(
 		"Items Selection",
-		["item_lotus_orb", "item_ethereal_blade", "item_mekansm", "item_guardian_greaves", "item_cyclone"],
+		[
+			"item_lotus_orb",
+			"item_ethereal_blade",
+			"item_mekansm",
+			"item_guardian_greaves",
+			"item_cyclone",
+			"item_manta"
+		],
 		new Map([
 			["item_lotus_orb", true],
 			["item_ethereal_blade", true],
 			["item_mekansm", true],
 			["item_guardian_greaves", true],
-			["item_cyclone", true]
+			["item_cyclone", true],
+			["item_manta", true]
 		]),
 		"Enable or disable specific items for saving",
 		true
@@ -237,6 +245,13 @@ new (class AutoSaveUtility {
 	private readonly eulSelfMinHP = this.eulWwNode.AddSlider("Save Self on HP %", 20, 1, 99)
 	private readonly eulEnemyInterrupt = this.eulWwNode.AddToggle("Cyclone Enemy Caster", true)
 	private readonly wwAllySave = this.eulWwNode.AddToggle("Wind Waker Save Allies", true)
+
+	// Manta Style settings
+	private readonly mantaNode = this.itemsNode.AddNode("Manta Style")
+	private readonly mantaDispelSilence = this.mantaNode.AddToggle("Dispel Silence", true)
+	private readonly mantaDispelRoot = this.mantaNode.AddToggle("Dispel Root", true)
+	private readonly mantaDodgeProjectiles = this.mantaNode.AddToggle("Dodge Projectiles/Threats", true)
+	private readonly mantaOnlyDanger = this.mantaNode.AddToggle("Only Save if in Danger", true)
 
 	private readonly castSleeper = new TickSleeper()
 
@@ -404,14 +419,9 @@ new (class AutoSaveUtility {
 						}
 					}
 
-					if (
-						this.lotusPredictInstant.value &&
-						INSTANT_REFLECTABLE_SPELLS.includes(abil.Name)
-					) {
+					if (this.lotusPredictInstant.value && INSTANT_REFLECTABLE_SPELLS.includes(abil.Name)) {
 						const isReady =
-							(abil.Level > 0 || abil instanceof Item) &&
-							abil.Cooldown <= 0.1 &&
-							enemy.IsManaEnough(abil)
+							(abil.Level > 0 || abil instanceof Item) && abil.Cooldown <= 0.1 && enemy.IsManaEnough(abil)
 						if (isReady) {
 							if (enemy.FindRotationAngle(target) < 0.15) {
 								const castRange = abil.CastRange > 0 ? abil.CastRange : 600
@@ -1159,6 +1169,41 @@ new (class AutoSaveUtility {
 								return
 							}
 						}
+					}
+				}
+			}
+		}
+
+		// 11. Manta Style Logic
+		if (this.itemsSelector.IsEnabled("item_manta") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
+			const manta = hero.GetItemByName("item_manta")
+			if (manta && manta.CanBeUsable && manta.Cooldown <= 0.1 && hero.IsManaEnough(manta)) {
+				let shouldCastManta = false
+
+				// 1. Dispel Silence / Root
+				if (this.mantaDispelSilence.value && hero.IsSilenced) {
+					shouldCastManta = true
+				}
+				if (this.mantaDispelRoot.value && hero.IsRooted) {
+					shouldCastManta = true
+				}
+
+				// 2. Dodge Projectiles or incoming threats targeted at us
+				if (!shouldCastManta && this.mantaDodgeProjectiles.value) {
+					if (
+						this.isAboutToBeTargetedByReflectableThreat(hero, allHeroes) ||
+						this.isUnderOrTargetedByMagicThreat(hero, allHeroes)
+					) {
+						shouldCastManta = true
+					}
+				}
+
+				if (shouldCastManta) {
+					const inDanger =
+						!this.mantaOnlyDanger.value || this.isTargetInDanger(hero, 100, true, allHeroes, hero)
+					if (inDanger) {
+						hero.CastNoTarget(manta)
+						this.castSleeper.Sleep(delay)
 					}
 				}
 			}
