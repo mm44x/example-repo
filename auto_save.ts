@@ -184,7 +184,8 @@ new (class AutoSaveUtility {
 			"shadow_demon_disruption",
 			"vengefulspirit_nether_swap",
 			"pugna_decrepify",
-			"nyx_assassin_spiked_carapace"
+			"nyx_assassin_spiked_carapace",
+			"oracle_false_promise"
 		],
 		new Map([
 			["dazzle_shallow_grave", true],
@@ -192,7 +193,8 @@ new (class AutoSaveUtility {
 			["shadow_demon_disruption", true],
 			["vengefulspirit_nether_swap", true],
 			["pugna_decrepify", true],
-			["nyx_assassin_spiked_carapace", true]
+			["nyx_assassin_spiked_carapace", true],
+			["oracle_false_promise", true]
 		]),
 		"Enable or disable specific hero spells for saving",
 		true
@@ -988,7 +990,50 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 7. Ethereal Blade Logic
+		// 7. Oracle False Promise Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("oracle_false_promise") &&
+			hero.Name === "npc_dota_hero_oracle" &&
+			!hero.IsSilenced &&
+			!hero.IsStunned &&
+			!hero.IsHexed
+		) {
+			const fate = hero.GetAbilityByName("oracle_false_promise")
+			if (fate && fate.IsValid && fate.Level > 0 && fate.Cooldown <= 0.1 && hero.IsManaEnough(fate)) {
+				const castRange = fate.CastRange > 0 ? fate.CastRange : 700
+
+				for (const target of orderedAllies) {
+					// Skip if target already has False Promise
+					if (target.HasBuffByName("modifier_oracle_false_promise")) {
+						continue
+					}
+
+					// Don't cast on self if we have a better save item (e.g., Aeon Disk active)
+					if (target === hero && this.hasActiveSaveOrImmunity(hero)) {
+						continue
+					}
+
+					if (
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(fate, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 8. Ethereal Blade Logic
 		if (this.itemsSelector.IsEnabled("item_ethereal_blade") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const eblade = hero.GetItemByName("item_ethereal_blade")
 			if (eblade && eblade.CanBeUsable && eblade.Cooldown <= 0.1 && hero.IsManaEnough(eblade)) {
@@ -1069,7 +1114,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 8. Lotus Orb Logic
+		// 9. Lotus Orb Logic
 		if (this.itemsSelector.IsEnabled("item_lotus_orb") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const lotus = hero.GetItemByName("item_lotus_orb")
 			if (lotus && lotus.CanBeUsable && lotus.Cooldown <= 0.1 && hero.IsManaEnough(lotus)) {
@@ -1137,7 +1182,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 9. Mekansm Logic
+		// 10. Mekansm Logic
 		if (this.itemsSelector.IsEnabled("item_mekansm") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const mek = hero.GetItemByName("item_mekansm")
 			if (mek && mek.CanBeUsable && mek.Cooldown <= 0.1 && hero.IsManaEnough(mek)) {
@@ -1167,7 +1212,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 10. Guardian Greaves Logic
+		// 11. Guardian Greaves Logic
 		if (
 			this.itemsSelector.IsEnabled("item_guardian_greaves") &&
 			!hero.IsMuted &&
@@ -1214,7 +1259,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 11. Eul's / Wind Waker Logic
+		// 12. Eul's / Wind Waker Logic
 		if (this.itemsSelector.IsEnabled("item_cyclone") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const ww = hero.GetItemByName("item_wind_waker")
 			const eul = hero.GetItemByName("item_cyclone")
@@ -1305,7 +1350,7 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 12. Manta Style Logic
+		// 13. Manta Style Logic
 		if (this.itemsSelector.IsEnabled("item_manta") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const manta = hero.GetItemByName("item_manta")
 			if (manta && manta.CanBeUsable && manta.Cooldown <= 0.1 && hero.IsManaEnough(manta)) {
