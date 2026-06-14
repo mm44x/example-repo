@@ -88,7 +88,8 @@ const THREAT_ABILITIES = [
 	"invoker_deafening_blast",
 	"invoker_sun_strike",
 	"lina_laguna_blade",
-	"skywrath_mage_mystic_flare"
+	"skywrath_mage_mystic_flare",
+	"huskar_life_break"
 ]
 
 const THREAT_ITEMS = ["item_orchid", "item_bloodthorn", "item_sheepstick", "item_abyssal_blade", "item_nullifier"]
@@ -792,6 +793,7 @@ new (class AutoSaveUtility {
 		}
 
 		// 2. Ringmaster Escape Act Logic
+		// Always prioritize self-save over allies, even in "Team First" mode
 		if (
 			this.heroSpellsSelector.IsEnabled("ringmaster_the_box") &&
 			hero.Name === "npc_dota_hero_ringmaster" &&
@@ -803,7 +805,27 @@ new (class AutoSaveUtility {
 			if (box && box.IsValid && box.Level > 0 && box.Cooldown <= 0.1 && hero.IsManaEnough(box)) {
 				const castRange = box.CastRange > 0 ? box.CastRange : 600
 
+				// Step 1: Always check self first (can't save others if you're dead)
+				if (
+					this.shouldSaveTarget(
+						hero,
+						allHeroes,
+						hero,
+						this.heroMinHP.value,
+						this.heroOnlyDanger.value,
+						this.heroLowHP.value,
+						this.heroFatal.value
+					)
+				) {
+					this.executeAndClaimOrder(() => hero.CastTarget(box, hero), delay)
+					return
+				}
+
+				// Step 2: Check allies
 				for (const target of orderedAllies) {
+					if (target === hero) {
+						continue
+					}
 					if (
 						this.shouldSaveTarget(
 							target,
