@@ -121,7 +121,13 @@ new (class LargoCombo {
 
 	/**
 	 * Handle hotkey press untuk memilih song Rhapsody.
-	 * Tekan sekali = toggle song tersebut ON/OFF sebagai auto-cast target.
+	 *
+	 * Logika: tekan hotkey langsung SET song aktif (bukan toggle).
+	 * - Tekan 1 saja → pilih Fight Song (ganti dari song sebelumnya)
+	 * - Tekan 2 saja → pilih Double Time
+	 * - Tekan 3 saja → pilih Good Vibrations
+	 * - Tekan 1+2 bersamaan (Aghanim) → pilih Fight Song + Double Time
+	 * - Tekan hotkey yang sudah aktif → matikan (deselect)
 	 */
 	private handleRhapsodySongHotkeys(): void {
 		if (this.keySleeper.Sleeping) {
@@ -139,40 +145,28 @@ new (class LargoCombo {
 			return
 		}
 
-		// Debounce: 200ms agar satu key press = satu toggle
+		// Debounce: 200ms agar satu key press = satu event
 		this.keySleeper.Sleep(200)
 
-		if (fightPressed) {
-			const name = "largo_song_fight_song"
-			if (this.selectedRhapsodySongs.has(name)) {
-				this.selectedRhapsodySongs.delete(name)
-				console.log(`[LargoCombo] Rhapsody: Fight Song DESELECTED`)
-			} else {
-				this.selectedRhapsodySongs.add(name)
-				console.log(`[LargoCombo] Rhapsody: Fight Song SELECTED`)
-			}
-		}
+		// Kumpulkan semua song yang sedang ditekan sekarang
+		const pressed = new Set<string>()
+		if (fightPressed) pressed.add("largo_song_fight_song")
+		if (doublePressed) pressed.add("largo_song_double_time")
+		if (goodPressed) pressed.add("largo_song_good_vibrations")
 
-		if (doublePressed) {
-			const name = "largo_song_double_time"
-			if (this.selectedRhapsodySongs.has(name)) {
-				this.selectedRhapsodySongs.delete(name)
-				console.log(`[LargoCombo] Rhapsody: Double Time DESELECTED`)
-			} else {
-				this.selectedRhapsodySongs.add(name)
-				console.log(`[LargoCombo] Rhapsody: Double Time SELECTED`)
-			}
-		}
+		// Cek apakah semua yang ditekan sudah aktif (untuk deselect)
+		const allAlreadySelected = Array.from(pressed).every(s => this.selectedRhapsodySongs.has(s))
 
-		if (goodPressed) {
-			const name = "largo_song_good_vibrations"
-			if (this.selectedRhapsodySongs.has(name)) {
-				this.selectedRhapsodySongs.delete(name)
-				console.log(`[LargoCombo] Rhapsody: Good Vibrations DESELECTED`)
-			} else {
-				this.selectedRhapsodySongs.add(name)
-				console.log(`[LargoCombo] Rhapsody: Good Vibrations SELECTED`)
+		if (allAlreadySelected) {
+			// Semua yang ditekan sudah aktif → matikan (deselect)
+			for (const s of pressed) {
+				this.selectedRhapsodySongs.delete(s)
 			}
+			console.log(`[LargoCombo] Rhapsody: Songs DESELECTED: ${Array.from(pressed).join(", ")}`)
+		} else {
+			// Ganti pilihan: clear semua, set hanya yang ditekan sekarang
+			this.selectedRhapsodySongs = pressed
+			console.log(`[LargoCombo] Rhapsody: Songs SET to: ${Array.from(pressed).join(", ")}`)
 		}
 	}
 
