@@ -26,8 +26,31 @@ new (class LargoCombo {
 	private readonly autoRhapsodySpells = this.entry.AddToggle(
 		"Auto Rhapsody Skills",
 		true,
-		"Automatically cast Fight Song, Double Time, and Good Vibrations when in Rhapsody state"
+		"Automatically cast selected Rhapsody songs when in Rhapsody state"
 	)
+
+	// Hotkeys untuk memilih song mana yang di-auto cast
+	// Tekan sekali untuk toggle ON/OFF, auto cast hanya song yang dipilih
+	private readonly fightSongKey = this.entry.AddKeybind(
+		"Fight Song (Bullbelly Blitz) Key",
+		"1",
+		"Press to toggle Fight Song as selected Rhapsody auto-cast target"
+	)
+	private readonly doubleTimeKey = this.entry.AddKeybind(
+		"Double Time (Hotfeet Hustle) Key",
+		"2",
+		"Press to toggle Double Time as selected Rhapsody auto-cast target"
+	)
+	private readonly goodVibrationsKey = this.entry.AddKeybind(
+		"Good Vibrations (Island Elixir) Key",
+		"3",
+		"Press to toggle Good Vibrations as selected Rhapsody auto-cast target"
+	)
+
+	// State: song mana saja yang dipilih user
+	private selectedRhapsodySongs = new Set<string>()
+	// Debounce agar satu key press = satu toggle
+	private readonly keySleeper = new TickSleeper()
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Largo combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
@@ -98,7 +121,66 @@ new (class LargoCombo {
 	// ----------------------------------------------------------------
 
 	/**
-	 * Auto Rhapsody Skills — otomatis cast sub-skill Rhapsody setiap 1 detik jika wujud Rhapsody aktif.
+	 * Handle hotkey press untuk memilih song Rhapsody.
+	 * Tekan sekali = toggle song tersebut ON/OFF sebagai auto-cast target.
+	 */
+	private handleRhapsodySongHotkeys(): void {
+		if (this.keySleeper.Sleeping) {
+			return
+		}
+
+		// @ts-ignore
+		const fightPressed = this.fightSongKey.isPressed
+		// @ts-ignore
+		const doublePressed = this.doubleTimeKey.isPressed
+		// @ts-ignore
+		const goodPressed = this.goodVibrationsKey.isPressed
+
+		if (!fightPressed && !doublePressed && !goodPressed) {
+			return
+		}
+
+		// Debounce: 200ms agar satu key press = satu toggle
+		this.keySleeper.Sleep(200)
+
+		if (fightPressed) {
+			const name = "largo_song_fight_song"
+			if (this.selectedRhapsodySongs.has(name)) {
+				this.selectedRhapsodySongs.delete(name)
+				console.log(`[LargoCombo] Rhapsody: Fight Song DESELECTED`)
+			} else {
+				this.selectedRhapsodySongs.add(name)
+				console.log(`[LargoCombo] Rhapsody: Fight Song SELECTED`)
+			}
+		}
+
+		if (doublePressed) {
+			const name = "largo_song_double_time"
+			if (this.selectedRhapsodySongs.has(name)) {
+				this.selectedRhapsodySongs.delete(name)
+				console.log(`[LargoCombo] Rhapsody: Double Time DESELECTED`)
+			} else {
+				this.selectedRhapsodySongs.add(name)
+				console.log(`[LargoCombo] Rhapsody: Double Time SELECTED`)
+			}
+		}
+
+		if (goodPressed) {
+			const name = "largo_song_good_vibrations"
+			if (this.selectedRhapsodySongs.has(name)) {
+				this.selectedRhapsodySongs.delete(name)
+				console.log(`[LargoCombo] Rhapsody: Good Vibrations DESELECTED`)
+			} else {
+				this.selectedRhapsodySongs.add(name)
+				console.log(`[LargoCombo] Rhapsody: Good Vibrations SELECTED`)
+			}
+		}
+	}
+
+	/**
+	 * Auto Rhapsody Skills — cast hanya song yang dipilih user via hotkey.
+	 * Tanpa Aghanim: maksimal 1 song aktif sekaligus.
+	 * Dengan Aghanim (Scepter): bisa 2 song sekaligus.
 	 */
 	private executeAutoRhapsodySpells(hero: Hero, target?: Hero): boolean {
 		if (!this.autoRhapsodySpells.value || this.rhapsodySleeper.Sleeping) {
@@ -112,6 +194,16 @@ new (class LargoCombo {
 		if (!hero.HasBuffByName("modifier_largo_amphibian_rhapsody_self")) {
 			return false
 		}
+
+		// Jika tidak ada song yang dipilih, tidak cast apapun
+		if (this.selectedRhapsodySongs.size === 0) {
+			return false
+		}
+
+		// Cek apakah hero punya Aghanim (bisa 2 song bersamaan)
+		const hasAghanim = hero.HasBuffByName("modifier_item_ultimate_scepter_consumed") ||
+			hero.HasBuffByName("modifier_item_ultimate_scepter")
+		const maxSongs = hasAghanim ? 2 : 1
 
 		// Cari target terdekat jika target tidak di-pass dari combo
 		let castTarget = target
@@ -128,12 +220,22 @@ new (class LargoCombo {
 			}
 		}
 
-		const rhapsodySpells = [
-			"largo_song_fight_song",
-			"largo_song_double_time",
-			"largo_song_good_vibrations"
-		]
-		for (const spellName of rhapsodySpells) {
+		// Hitung berapa song yang saat ini aktif (sedang di-buff target/self)
+		const songBuffMap: Record<string, string> = {
+			"largo_song_fight_song": "modifier_largo_song_fight_song",
+			"largo_song_double_time": "modifier_largo_song_double_time",
+			"largo_song_good_vibrations": "modifier_largo_song_good_vibrations"
+		}
+
+		// Iterasi hanya song yang dipilih user
+		const selectedList = Array.from(this.selectedRhapsodySongs)
+		let castCount = 0
+
+		for (const spellName of selectedList) {
+			if (castCount >= maxSongs) {
+				break
+			}
+
 			const ability = hero.GetAbilityByName(spellName)
 			if (
 				!ability ||
@@ -144,57 +246,55 @@ new (class LargoCombo {
 				continue
 			}
 
-			// Offensive spells require a valid enemy target
 			const isOffensive =
 				spellName === "largo_song_fight_song" ||
 				spellName === "largo_song_double_time"
 			const isSupportive = spellName === "largo_song_good_vibrations"
+
 			if (isOffensive) {
 				if (!castTarget) {
 					continue
 				}
-				const isTargetImmune = castTarget.IsMagicImmune || castTarget.IsDebuffImmune
-				if (isTargetImmune) {
+				if (castTarget.IsMagicImmune || castTarget.IsDebuffImmune) {
 					continue
 				}
 			}
 
-			// Supportive spells cast on self
-			const spellTarget = isSupportive ? hero : (isOffensive ? castTarget! : (castTarget || hero))
+			const spellTarget = isSupportive ? hero : (castTarget || hero)
 
-			// Cast
 			if (this.executeComboAbility(hero, ability, spellTarget!)) {
 				console.log(`[LargoCombo] Auto Rhapsody cast: ${spellName}`)
-				this.rhapsodySleeper.Sleep(1000) // BEAT INTERVAL: 1 sec
-				return true
+				castCount++
+				// Jika bisa 2 song (Aghanim), tidak sleep dulu — langsung coba cast song ke-2
+				if (castCount >= maxSongs) {
+					this.rhapsodySleeper.Sleep(1000) // BEAT INTERVAL: 1 sec
+					return true
+				}
 			}
 		}
 
-		// Jika semua skill rhapsody di atas sedang cooldown/habis, otomatis exit rhapsody
-		const rhapsody = hero.GetAbilityByName("largo_amphibian_rhapsody")
-		if (
-			rhapsody &&
-			rhapsody.IsValid &&
-			rhapsody.Cooldown <= 0.1 &&
-			hero.Mana >= rhapsody.ManaCost
-		) {
-			const blitz = hero.GetAbilityByName("largo_song_fight_song")
-			const hustle = hero.GetAbilityByName("largo_song_double_time")
-			const elixir = hero.GetAbilityByName("largo_song_good_vibrations")
+		if (castCount > 0) {
+			this.rhapsodySleeper.Sleep(1000)
+			return true
+		}
 
-			const isReady = (abil: Ability | undefined) => {
-				return (
-					abil &&
-					abil.IsValid &&
-					abil.Cooldown <= 0.5 &&
-					hero.Mana >= abil.ManaCost
-				)
-			}
+		// Jika semua selected song tidak bisa di-cast (cooldown/no mana), exit Rhapsody
+		const allOnCooldown = selectedList.every(spellName => {
+			const ability = hero.GetAbilityByName(spellName)
+			return !ability || !ability.IsValid || ability.Cooldown > 0.5 || hero.Mana < ability.ManaCost
+		})
 
-			if (!isReady(blitz) && !isReady(hustle) && !isReady(elixir)) {
+		if (allOnCooldown) {
+			const rhapsody = hero.GetAbilityByName("largo_amphibian_rhapsody")
+			if (
+				rhapsody &&
+				rhapsody.IsValid &&
+				rhapsody.Cooldown <= 0.1 &&
+				hero.Mana >= rhapsody.ManaCost
+			) {
 				const exitTarget = castTarget || hero
 				if (this.executeComboAbility(hero, rhapsody, exitTarget)) {
-					console.log(`[LargoCombo] Auto Rhapsody exit`)
+					console.log(`[LargoCombo] Auto Rhapsody exit (selected songs on cooldown)`)
 					this.rhapsodySleeper.Sleep(
 						GameState.InputLag * 1000 + rhapsody.CastPoint * 1000 + 100
 					)
@@ -322,6 +422,7 @@ new (class LargoCombo {
 		}
 
 		// Background features — jalan tanpa combo key
+		this.handleRhapsodySongHotkeys()
 		this.executeAutoRhapsodySpells(hero)
 
 		// @ts-ignore
