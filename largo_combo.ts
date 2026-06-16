@@ -2,7 +2,6 @@ import {
 	Ability,
 	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
-	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
@@ -205,27 +204,8 @@ new (class LargoCombo {
 			hero.HasBuffByName("modifier_item_ultimate_scepter")
 		const maxSongs = hasAghanim ? 2 : 1
 
-		// Cari target terdekat jika target tidak di-pass dari combo
-		let castTarget = target
-		if (!castTarget || !castTarget.IsValid || !castTarget.IsAlive) {
-			let minDist = Infinity
-			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
-					const dist = hero.Distance2D(enemy)
-					if (dist <= 1200 && dist < minDist) {
-						minDist = dist
-						castTarget = enemy
-					}
-				}
-			}
-		}
-
-		// Hitung berapa song yang saat ini aktif (sedang di-buff target/self)
-		const songBuffMap: Record<string, string> = {
-			"largo_song_fight_song": "modifier_largo_song_fight_song",
-			"largo_song_double_time": "modifier_largo_song_double_time",
-			"largo_song_good_vibrations": "modifier_largo_song_good_vibrations"
-		}
+		// Semua 3 song (fight_song, double_time, good_vibrations) adalah NO_TARGET/self-cast
+		// Tidak butuh enemy target — cast langsung ke hero
 
 		// Iterasi hanya song yang dipilih user
 		const selectedList = Array.from(this.selectedRhapsodySongs)
@@ -246,26 +226,10 @@ new (class LargoCombo {
 				continue
 			}
 
-			const isOffensive =
-				spellName === "largo_song_fight_song" ||
-				spellName === "largo_song_double_time"
-			const isSupportive = spellName === "largo_song_good_vibrations"
-
-			if (isOffensive) {
-				if (!castTarget) {
-					continue
-				}
-				if (castTarget.IsMagicImmune || castTarget.IsDebuffImmune) {
-					continue
-				}
-			}
-
-			const spellTarget = isSupportive ? hero : (castTarget || hero)
-
-			if (this.executeComboAbility(hero, ability, spellTarget!)) {
+			// Cast ke hero (NO_TARGET), executeComboAbility handle behavior otomatis
+			if (this.executeComboAbility(hero, ability, hero)) {
 				console.log(`[LargoCombo] Auto Rhapsody cast: ${spellName}`)
 				castCount++
-				// Jika bisa 2 song (Aghanim), tidak sleep dulu — langsung coba cast song ke-2
 				if (castCount >= maxSongs) {
 					this.rhapsodySleeper.Sleep(1000) // BEAT INTERVAL: 1 sec
 					return true
