@@ -1,4 +1,11 @@
-import { dotaunitorder_t, ExecuteOrder, GameState, Hero, TickSleeper } from "github.com/octarine-public/wrapper/index"
+import {
+	dotaunitorder_t,
+	ExecuteOrder,
+	GameState,
+	Hero,
+	TickSleeper,
+	Vector3
+} from "github.com/octarine-public/wrapper/index"
 
 export interface OrbwalkConfig {
 	enabled: boolean
@@ -125,14 +132,11 @@ function calcOrbwalkPosition(hero: Hero, target: Hero, safeDistancePct: number) 
 	perp.y = perp.y ?? 0
 	const len = Math.sqrt(perp.x * perp.x + perp.y * perp.y)
 	if (len > 0) {
-		return target.Position.Add({
-			x: (perp.x / len) * safeDist,
-			y: (perp.y / len) * safeDist
-		})
+		return target.Position.Add(new Vector3((perp.x / len) * safeDist, (perp.y / len) * safeDist, 0))
 	}
 
 	// Ultimate fallback — move east
-	return target.Position.Add({ x: safeDist, y: 0 })
+	return target.Position.Add(new Vector3(safeDist, 0, 0))
 }
 
 function simpleAttack(hero: Hero, target: Hero, sleeper: TickSleeper): boolean {

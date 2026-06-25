@@ -129,30 +129,15 @@ class CustomLastHit {
 			}
 
 			// Get target armor (creeps have base armor from UnitData)
-			const targetArmor = target.ArmorPhysical || 0
+			const targetArmor = target.Armor || 0
 
 			// Standard Dota armor formula (handles both positive and negative armor)
-			let armorMultiplier: number
-			if (targetArmor >= 0) {
-				armorMultiplier = 1 / (1 + 0.06 * targetArmor)
-			} else {
-				// For negative armor: damage_multiplier = 2 - 0.94^(-armor)
-				armorMultiplier = 2 - Math.pow(0.94, -targetArmor)
-			}
+			const armorMultiplier = targetArmor >= 0 ? 1 / (1 + 0.06 * targetArmor) : 2 - Math.pow(0.94, -targetArmor)
 
 			// Damage block from Stout Shield / Vanguard / etc (approximate for creeps)
 			// Lane creeps have small innate block, siege creeps have more
-			let damageBlock = 0
-			const unitData = target.UnitData
-			if (unitData) {
-				// Check if it's a ranged/siege creep which typically have more armor/block
-				const name = unitData.Name?.toLowerCase() || ""
-				if (name.includes("siege") || name.includes("ranged")) {
-					damageBlock = 2 // siege/ranged creeps have slight block
-				} else {
-					damageBlock = 1 // melee creeps have minimal block
-				}
-			}
+			const name = target.Name?.toLowerCase() || ""
+			const damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
 
 			// Apply armor multiplier
 			let actualDamage = rawDamage * armorMultiplier
@@ -334,14 +319,11 @@ class CustomLastHit {
 			const rawAttackDamage = hero.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
 
 			// Apply armor reduction and damage block for OUR attack on this creep
-			const targetArmor = creep.ArmorPhysical || 0
+			const targetArmor = creep.Armor || 0
 			const armorReduction = (targetArmor * 0.06) / (1 + targetArmor * 0.06)
 			let damageBlock = 0
-			const unitData = creep.UnitData
-			if (unitData) {
-				const name = unitData.Name?.toLowerCase() || ""
-				damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
-			}
+			const name = creep.Name?.toLowerCase() || ""
+			damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
 			const attackDamage = Math.max(1, rawAttackDamage * (1 - armorReduction) - damageBlock)
 
 			if (creep.IsEnemy(hero)) {

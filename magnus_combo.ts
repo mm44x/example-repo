@@ -1,6 +1,5 @@
 import {
 	Ability,
-	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
 	EntityManager,
 	EventsSDK,
@@ -13,8 +12,7 @@ import {
 	LocalPlayer,
 	Menu,
 	TickSleeper,
-	Unit,
-	Vector3
+	Unit
 } from "github.com/octarine-public/wrapper/index"
 
 import { executeOrbwalk } from "./orbwalker"
@@ -69,6 +67,9 @@ new (class MagnusCombo {
 
 	private comboSequenceGrid: any
 	private lockedTarget: Hero | undefined = undefined
+	private lastComboTime = 0
+	private currentSetup: "horn_toss" | "harpoon" | "shockwave" | "none" | undefined = undefined
+	private comboStep: "idle" | "setup" | "skewer" = "idle"
 
 	// Sleepers
 	private readonly sleeper = new TickSleeper()
@@ -98,58 +99,13 @@ new (class MagnusCombo {
 		)
 	}
 
-	private executeComboAbility(
-		hero: Hero,
-		ability: Ability,
-		target: Hero | Unit,
-		isPosition = false,
-		pos?: Vector3
-	): boolean {
-		const isNoTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
-		const isTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
-		const isPoint = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
-
-		if (isPosition || isPoint) {
-			const castPos = pos ?? target.Position.Clone()
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-				issuers: [hero],
-				position: castPos,
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		} else if (isTarget) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-				issuers: [hero],
-				target: target.Index,
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		} else if (isNoTarget) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-				issuers: [hero],
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		}
-		return false
-	}
-
 	private onGameEnded(): void {
 		this.sleeper.Sleep(0)
 		this.comboSequenceGrid = null
 		this.lockedTarget = undefined
+		this.lastComboTime = 0
+		this.currentSetup = undefined
+		this.comboStep = "idle"
 	}
 
 	private PostDataUpdate(delta: number): void {
@@ -170,6 +126,8 @@ new (class MagnusCombo {
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
 			this.lockedTarget = undefined
+			this.currentSetup = undefined
+			this.comboStep = "idle"
 			return
 		}
 
@@ -186,69 +144,9 @@ new (class MagnusCombo {
 				this.lockedTarget.IsIllusion
 			) {
 				this.lockedTarget = undefined
+				this.currentSetup = undefined
+				this.comboStep = "idle"
 			}
-		}
-
-		// Target Selection (nearest to cursor) if not locked
-		if (!this.lockedTarget) {
-			const maxCastRange = 1200
-			const mousePos = InputManager.CursorOnWorld
-			let foundTarget: Hero | undefined
-			let minDist = Infinity
-
-			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
-					const distToCursor = enemy.Position.Distance2D(mousePos)
-					const distToHero = hero.Distance2D(enemy)
-					if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
-						minDist = distToCursor
-						foundTarget = enemy
-					}
-				}
-			}
-
-			if (foundTarget) {
-				this.lockedTarget = foundTarget
-			}
-		}
-
-		const bestTarget = this.lockedTarget
-		if (!bestTarget) {
-			return
-		}
-
-		if (this.sleeper.Sleeping) {
-			return
-		}
-
-		// Redirection target calculation (closest ally or fountain)
-		let redirectionTarget: Unit | undefined
-		let minAllyDist = Infinity
-		const searchRadius = this.allySearchRadius.value
-
-		for (const ally of EntityManager.GetEntitiesByClass(Hero)) {
-			if (
-				ally.IsValid &&
-				ally.IsAlive &&
-				ally !== hero &&
-				!ally.IsEnemy(hero) &&
-				!ally.IsIllusion &&
-				hero.Distance2D(ally) <= searchRadius
-			) {
-				const dist = hero.Distance2D(ally)
-				if (dist < minAllyDist) {
-					minAllyDist = dist
-					redirectionTarget = ally
-				}
-			}
-		}
-
-		if (!redirectionTarget) {
-			redirectionTarget = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
-		}
-
-		if (!redirectionTarget) {
-			return
 		}
 
 		// Items checks
@@ -300,45 +198,202 @@ new (class MagnusCombo {
 			hero.Mana >= skewer.ManaCost &&
 			this.comboSequenceGrid.IsEnabled("magnataur_skewer")
 
-		// 1. Blink Combo (choose one setup: Horn Toss > Harpoon > Shockwave)
-		if (blinkReady && isSkewerReady) {
-			const blinkPos = bestTarget.Position.Extend(redirectionTarget.Position, -150)
-			const distToBlink = hero.Distance2D(blinkPos)
+		// Target Selection (nearest to cursor) if not locked
+		if (!this.lockedTarget) {
+			const maxCastRange = 1200
+			const mousePos = InputManager.CursorOnWorld
+			let foundTarget: Hero | undefined
+			let minDist = Infinity
 
-			if (distToBlink <= 1200) {
-				let setupAbility: Ability | Item | undefined
-				let setupType: "horn_toss" | "harpoon" | "shockwave" | undefined
+			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+					const distToCursor = enemy.Position.Distance2D(mousePos)
+					const distToHero = hero.Distance2D(enemy)
+					if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
+						minDist = distToCursor
+						foundTarget = enemy
+					}
+				}
+			}
 
-				if (isHornTossReady) {
-					setupAbility = hornToss
-					setupType = "horn_toss"
-				} else if (harpoonReady) {
-					setupAbility = harpoon
-					setupType = "harpoon"
-				} else if (isShockwaveReady) {
-					setupAbility = shockwave
-					setupType = "shockwave"
+			if (foundTarget) {
+				this.lockedTarget = foundTarget
+			}
+		}
+
+		const bestTarget = this.lockedTarget
+		if (!bestTarget) {
+			return
+		}
+
+		// Initialize setup type immediately when target is locked and setup isn't decided yet
+		if (this.currentSetup === undefined) {
+			if (isHornTossReady) {
+				this.currentSetup = "horn_toss"
+			} else if (harpoonReady) {
+				this.currentSetup = "harpoon"
+			} else if (isShockwaveReady) {
+				this.currentSetup = "shockwave"
+			} else {
+				this.currentSetup = "none"
+			}
+		}
+
+		if (this.sleeper.Sleeping) {
+			return
+		}
+
+		// Redirection target calculation (closest ally or fountain)
+		let redirectionTarget: Unit | undefined
+		let minAllyDist = Infinity
+		const searchRadius = this.allySearchRadius.value
+
+		for (const ally of EntityManager.GetEntitiesByClass(Hero)) {
+			if (
+				ally.IsValid &&
+				ally.IsAlive &&
+				ally !== hero &&
+				!ally.IsEnemy(hero) &&
+				!ally.IsIllusion &&
+				hero.Distance2D(ally) <= searchRadius
+			) {
+				const dist = hero.Distance2D(ally)
+				if (dist < minAllyDist) {
+					minAllyDist = dist
+					redirectionTarget = ally
+				}
+			}
+		}
+
+		if (!redirectionTarget) {
+			redirectionTarget = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
+		}
+
+		if (!redirectionTarget) {
+			return
+		}
+
+		// 1. Skewer Combo Execution (Step-by-step)
+		if (isSkewerReady && Date.now() - this.lastComboTime > 2000) {
+			const setupType = this.currentSetup || "none"
+			let setupAbility: Ability | Item | undefined
+			if (setupType === "horn_toss") {
+				setupAbility = hornToss
+			} else if (setupType === "harpoon") {
+				setupAbility = harpoon
+			} else if (setupType === "shockwave") {
+				setupAbility = shockwave
+			}
+
+			// Validate chosen setup readiness when starting combo
+			let setupReady = false
+			if (setupType === "horn_toss" && isHornTossReady) {
+				setupReady = true
+			} else if (setupType === "harpoon" && harpoonReady) {
+				setupReady = true
+			} else if (setupType === "shockwave" && isShockwaveReady) {
+				setupReady = true
+			} else if (setupType === "none") {
+				setupReady = true
+			}
+
+			if (this.comboStep === "idle") {
+				if (!setupReady) {
+					// Chosen setup is not ready, do not initiate combo
+					return
 				}
 
-				if (setupAbility && setupType) {
-					// Cast Blink
+				if (blinkReady) {
+					const blinkPos = bestTarget.Position.Extend(redirectionTarget.Position, -150)
+					if (hero.Distance2D(blinkPos) <= 1200) {
+						// Step 1: Blink
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+							issuers: [hero],
+							position: blinkPos,
+							ability: blink.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+						this.comboStep = "setup"
+						console.log("[MagnusCombo] Step 1: Casted Blink")
+						this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+						return
+					}
+				}
+
+				// If Blink not ready, too far, or not owned, do direct setup
+				if (setupAbility) {
+					const castRange =
+						setupAbility.CastRange > 0 ? setupAbility.CastRange : setupType === "horn_toss" ? 275 : 800
+					if (hero.Distance2D(bestTarget) <= castRange) {
+						// Direct Setup
+						if (setupType === "horn_toss") {
+							ExecuteOrder.PrepareOrder({
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+								issuers: [hero],
+								ability: setupAbility.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							})
+						} else if (setupType === "harpoon") {
+							ExecuteOrder.PrepareOrder({
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: setupAbility.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							})
+						} else if (setupType === "shockwave") {
+							ExecuteOrder.PrepareOrder({
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+								issuers: [hero],
+								position: bestTarget.Position,
+								ability: setupAbility.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							})
+						}
+						this.comboStep = "skewer"
+						console.log(`[MagnusCombo] Direct: Casted Setup ${setupType}`)
+						this.sleeper.Sleep(GameState.InputLag * 1000 + setupAbility.CastPoint * 1000 + 100)
+						return
+					}
+				} else if (hero.Distance2D(bestTarget) <= 150) {
+					// No setup, direct Skewer
+					const skewerRange = skewer.CastRange > 0 ? skewer.CastRange : 1200
+					const skewerPos = hero.Position.Extend(redirectionTarget.Position, skewerRange)
 					ExecuteOrder.PrepareOrder({
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 						issuers: [hero],
-						position: blinkPos,
-						ability: blink.Index,
+						position: skewerPos,
+						ability: skewer.Index,
 						queue: false,
 						showEffects: true,
 						isPlayerInput: false
 					})
+					console.log("[MagnusCombo] Direct: Casted Skewer")
+					this.lastComboTime = Date.now()
+					this.comboStep = "idle"
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 1500)
+					return
+				}
+			}
 
-					// Queue Setup Ability/Item
+			if (this.comboStep === "setup") {
+				if (setupAbility) {
+					// Step 2: Cast Setup
 					if (setupType === "horn_toss") {
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 							issuers: [hero],
 							ability: setupAbility.Index,
-							queue: true,
+							queue: false,
 							showEffects: true,
 							isPlayerInput: false
 						})
@@ -348,7 +403,7 @@ new (class MagnusCombo {
 							issuers: [hero],
 							target: bestTarget.Index,
 							ability: setupAbility.Index,
-							queue: true,
+							queue: false,
 							showEffects: true,
 							isPlayerInput: false
 						})
@@ -358,103 +413,38 @@ new (class MagnusCombo {
 							issuers: [hero],
 							position: bestTarget.Position,
 							ability: setupAbility.Index,
-							queue: true,
+							queue: false,
 							showEffects: true,
 							isPlayerInput: false
 						})
 					}
-
-					// Queue Skewer towards redirection target
-					const skewerRange = skewer.CastRange > 0 ? skewer.CastRange : 1200
-					const skewerPos = blinkPos.Extend(redirectionTarget.Position, skewerRange)
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: skewerPos,
-						ability: skewer.Index,
-						queue: true,
-						showEffects: true,
-						isPlayerInput: false
-					})
-
-					console.log(`[MagnusCombo] Blink + ${setupType} + Skewer combo executed!`)
-					this.sleeper.Sleep(GameState.InputLag * 1000 + 450)
+					this.comboStep = "skewer"
+					console.log(`[MagnusCombo] Step 2: Casted Setup ${setupType}`)
+					this.sleeper.Sleep(GameState.InputLag * 1000 + setupAbility.CastPoint * 1000 + 100)
 					return
 				}
-			}
-		}
-
-		// 2. Harpoon + Skewer Combo (if Harpoon ready and Skewer/Horn Toss ready)
-		if (harpoonReady && hero.Distance2D(bestTarget, true) <= 700) {
-			// Cast Harpoon
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-				issuers: [hero],
-				target: bestTarget.Index,
-				ability: harpoon.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-
-			console.log("[MagnusCombo] Harpoon executed!")
-			// Sleep for 250ms to allow pull to bring them together
-			this.sleeper.Sleep(250)
-			return
-		}
-
-		// Execute custom ordered combo
-		for (const spellName of this.comboSequenceGrid.values) {
-			if (!this.comboSequenceGrid.IsEnabled(spellName)) {
-				continue
+				// No setup, go directly to Skewer step
+				this.comboStep = "skewer"
 			}
 
-			const ability = hero.GetAbilityByName(spellName)
-			if (
-				!ability ||
-				!ability.IsValid ||
-				ability.IsHidden ||
-				ability.Level <= 0 ||
-				ability.Cooldown > 0.1 ||
-				hero.Mana < ability.ManaCost
-			) {
-				continue
-			}
-
-			// Range check for direct casting (Blink not ready or other scenario)
-			const castRange = ability.CastRange > 0 ? ability.CastRange : 800
-			if (spellName !== "magnataur_horn_toss" && hero.Distance2D(bestTarget) > castRange) {
-				continue
-			}
-
-			if (spellName === "magnataur_shockwave") {
-				if (this.executeComboAbility(hero, ability, bestTarget, true)) {
-					console.log("[MagnusCombo] Casted Shockwave directly!")
-					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-					return
-				}
-			}
-
-			if (spellName === "magnataur_horn_toss") {
-				// Horn Toss flings enemies in 250 radius in front of Magnus
-				if (hero.Distance2D(bestTarget) <= 275) {
-					if (this.executeComboAbility(hero, ability, bestTarget)) {
-						console.log("[MagnusCombo] Casted Horn Toss!")
-						// Sleep slightly to let the 0.2s cast animation finish
-						this.sleeper.Sleep(GameState.InputLag * 1000 + 200)
-						return
-					}
-				}
-			}
-
-			if (spellName === "magnataur_skewer") {
-				const skewerRange = ability.CastRange > 0 ? ability.CastRange : 1200
+			if (this.comboStep === "skewer") {
+				// Step 3: Cast Skewer
+				const skewerRange = skewer.CastRange > 0 ? skewer.CastRange : 1200
 				const skewerPos = hero.Position.Extend(redirectionTarget.Position, skewerRange)
-				if (this.executeComboAbility(hero, ability, bestTarget, true, skewerPos)) {
-					console.log("[MagnusCombo] Casted Skewer!")
-					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-					return
-				}
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+					issuers: [hero],
+					position: skewerPos,
+					ability: skewer.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				console.log("[MagnusCombo] Step 3: Casted Skewer")
+				this.lastComboTime = Date.now()
+				this.comboStep = "idle"
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 1500)
+				return
 			}
 		}
 
