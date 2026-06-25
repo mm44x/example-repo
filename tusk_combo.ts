@@ -71,6 +71,7 @@ new (class TuskCombo {
 	)
 
 	private comboSequenceGrid: any
+	private lockedTarget: Hero | undefined = undefined
 
 	// Sleepers
 	private readonly sleeper = new TickSleeper()
@@ -166,6 +167,7 @@ new (class TuskCombo {
 		this.sleeper.Sleep(0)
 		this.pullSleeper.Sleep(0)
 		this.comboSequenceGrid = null
+		this.lockedTarget = undefined
 	}
 
 	private PostDataUpdate(delta: number): void {
@@ -234,6 +236,7 @@ new (class TuskCombo {
 		// Check combo hotkey
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
+			this.lockedTarget = undefined
 			return
 		}
 
@@ -241,23 +244,42 @@ new (class TuskCombo {
 			return
 		}
 
-		// Target Selection (nearest to cursor)
-		const maxCastRange = 1200
-		const mousePos = InputManager.CursorOnWorld
-		let bestTarget: Hero | undefined
-		let minDist = Infinity
-
-		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-			if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
-				const distToCursor = enemy.Position.Distance2D(mousePos)
-				const distToHero = hero.Distance2D(enemy)
-				if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
-					minDist = distToCursor
-					bestTarget = enemy
-				}
+		// Verify existing locked target
+		if (this.lockedTarget) {
+			if (
+				!this.lockedTarget.IsValid ||
+				!this.lockedTarget.IsAlive ||
+				!this.lockedTarget.IsVisible ||
+				this.lockedTarget.IsIllusion
+			) {
+				this.lockedTarget = undefined
 			}
 		}
 
+		// Target Selection (nearest to cursor) if not locked
+		if (!this.lockedTarget) {
+			const maxCastRange = 1200
+			const mousePos = InputManager.CursorOnWorld
+			let foundTarget: Hero | undefined
+			let minDist = Infinity
+
+			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+					const distToCursor = enemy.Position.Distance2D(mousePos)
+					const distToHero = hero.Distance2D(enemy)
+					if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
+						minDist = distToCursor
+						foundTarget = enemy
+					}
+				}
+			}
+
+			if (foundTarget) {
+				this.lockedTarget = foundTarget
+			}
+		}
+
+		const bestTarget = this.lockedTarget
 		if (!bestTarget) {
 			return
 		}
