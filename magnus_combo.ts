@@ -448,6 +448,53 @@ new (class MagnusCombo {
 			}
 		}
 
+		// 2. Post-Initiation Spells Spam (if Skewer is on cooldown/not ready)
+		if (!isSkewerReady) {
+			if (isHornTossReady && hornToss && hero.Distance2D(bestTarget) <= 275) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+					issuers: [hero],
+					ability: hornToss.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				console.log("[MagnusCombo] Spammed Horn Toss!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + hornToss.CastPoint * 1000 + 100)
+				return
+			}
+
+			if (harpoonReady && harpoon && hero.Distance2D(bestTarget) <= 800) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: harpoon.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				console.log("[MagnusCombo] Spammed Harpoon!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+				return
+			}
+
+			if (isShockwaveReady && shockwave && hero.Distance2D(bestTarget) <= 1200) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+					issuers: [hero],
+					position: bestTarget.Position,
+					ability: shockwave.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				console.log("[MagnusCombo] Spammed Shockwave!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + shockwave.CastPoint * 1000 + 100)
+				return
+			}
+		}
+
 		// Fallback to Orb Walk
 		executeOrbwalk(hero, bestTarget, this.sleeper, {
 			enabled: this.smartOrbWalkEnabled.value,
