@@ -345,10 +345,9 @@ new (class TuskCombo {
 				if (!kickTarget) {
 					kickTarget = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
 				}
-
 				if (kickTarget) {
-					// Direction vector pointing from enemy to kickTarget
-					const kickDirection = bestTarget.Position.GetDirection2DTo(kickTarget.Position)
+					// Absolute position pointing to kickTarget
+					const kickDirection = kickTarget.Position
 
 					// Retrieve Blink item
 					const blink = hero.Items.find(

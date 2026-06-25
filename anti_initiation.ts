@@ -541,7 +541,7 @@ new (class AntiInitiationUtility {
 											)
 										}
 										if (kickTarget) {
-											const kickDirection = enemy.Position.GetDirection2DTo(kickTarget.Position)
+											const kickDirection = kickTarget.Position
 											ExecuteOrder.PrepareOrder({
 												orderType: dotaunitorder_t.DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION,
 												issuers: [hero],
