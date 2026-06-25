@@ -6,6 +6,7 @@ import "./anti_initiation"
 import "./auto_save"
 import "./visage_combo"
 import "./tusk_combo"
+import "./magnus_combo"
 
 import {
 	Attributes,
