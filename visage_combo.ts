@@ -13,10 +13,11 @@ import {
 	TickSleeper,
 	Unit
 } from "github.com/octarine-public/wrapper/index"
+
 import { executeOrbwalk } from "./orbwalker"
 
 new (class VisageCombo {
-	private readonly entry = Menu.AddEntry("mm44x").AddNode("Visage Combo")
+	private readonly entry = Menu.AddEntry("mm44x").AddNode("Combo Heroes").AddNode("Visage Combo")
 
 	// Enable/Disable combo
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Visage combo script")

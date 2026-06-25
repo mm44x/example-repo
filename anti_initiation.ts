@@ -13,6 +13,7 @@ import {
 	Menu,
 	RendererSDK,
 	TickSleeper,
+	Unit,
 	Vector2,
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
@@ -65,7 +66,11 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "legion_commander_duel", label: "Duel", piercesBkb: true, castType: "target" },
 	{ name: "necrolyte_reapers_scythe", label: "Reaper's Scythe", piercesBkb: true, castType: "target" },
 	{ name: "earthshaker_fissure", label: "Fissure", piercesBkb: false, castType: "position", castRange: 1400 },
-	{ name: "earthshaker_echo_slam", label: "Echo Slam", piercesBkb: true, castType: "no_target", castRange: 600 }
+	{ name: "earthshaker_echo_slam", label: "Echo Slam", piercesBkb: true, castType: "no_target", castRange: 600 },
+	{ name: "tusk_walrus_kick", label: "Walrus Kick", piercesBkb: false, castType: "target", castRange: 250 },
+	{ name: "tusk_walrus_punch", label: "Walrus PUNCH!", piercesBkb: true, castType: "target", castRange: 150 },
+	{ name: "tiny_toss", label: "Toss (Tiny)", piercesBkb: true, castType: "target", castRange: 900 },
+	{ name: "zuus_lightning_bolt", label: "Lightning Bolt (Zeus)", piercesBkb: false, castType: "target" }
 ]
 
 new (class AntiInitiationUtility {
@@ -489,10 +494,67 @@ new (class AntiInitiationUtility {
 							? hero.Distance2D(enemy) <= castRange
 							: hero.Distance2D(enemy, true) <= castRange
 					if (inRange) {
+						if (config.name === "tiny_toss") {
+							const grabRadius = 275
+							let hasGrabUnit = false
+							for (const unit of EntityManager.GetEntitiesByClass(Unit)) {
+								if (
+									unit.IsValid &&
+									unit.IsAlive &&
+									unit !== hero &&
+									hero.Distance2D(unit) <= grabRadius
+								) {
+									hasGrabUnit = true
+									break
+								}
+							}
+							if (!hasGrabUnit) {
+								continue
+							}
+						}
+
 						candidates.push({
 							name: config.label,
 							cast: () => {
 								if (config.castType === "target") {
+									if (config.name === "tusk_walrus_kick") {
+										let kickTarget: Unit | undefined
+										let minAllyDist = Infinity
+										for (const ally of EntityManager.GetEntitiesByClass(Hero)) {
+											if (
+												ally.IsValid &&
+												ally.IsAlive &&
+												ally !== hero &&
+												!ally.IsEnemy(hero) &&
+												!ally.IsIllusion
+											) {
+												const dist = hero.Distance2D(ally)
+												if (dist < minAllyDist) {
+													minAllyDist = dist
+													kickTarget = ally
+												}
+											}
+										}
+										if (!kickTarget) {
+											kickTarget = EntityManager.GetEntitiesByClass(Fountain).find(
+												f => f.IsValid && !f.IsEnemy(hero)
+											)
+										}
+										if (kickTarget) {
+											const kickDirection = enemy.Position.GetDirection2DTo(kickTarget.Position)
+											ExecuteOrder.PrepareOrder({
+												orderType: dotaunitorder_t.DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION,
+												issuers: [hero],
+												ability: spell.Index,
+												target: enemy.Index,
+												position: kickDirection,
+												queue: false,
+												showEffects: true,
+												isPlayerInput: false
+											})
+										}
+									}
+
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 										issuers: [hero],

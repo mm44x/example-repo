@@ -5,6 +5,7 @@ import "./armlet_abuse"
 import "./anti_initiation"
 import "./auto_save"
 import "./visage_combo"
+import "./tusk_combo"
 
 import {
 	Attributes,

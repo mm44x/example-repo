@@ -1,10 +1,4 @@
-import {
-	dotaunitorder_t,
-	ExecuteOrder,
-	GameState,
-	Hero,
-	TickSleeper
-} from "github.com/octarine-public/wrapper/index"
+import { dotaunitorder_t, ExecuteOrder, GameState, Hero, TickSleeper } from "github.com/octarine-public/wrapper/index"
 
 export interface OrbwalkConfig {
 	enabled: boolean
@@ -44,12 +38,7 @@ export function executeOrbwalk(
 	return smartOrbwalk(hero, target, sleeper, config)
 }
 
-function smartOrbwalk(
-	hero: Hero,
-	target: Hero,
-	sleeper: TickSleeper,
-	config: OrbwalkConfig
-): boolean {
+function smartOrbwalk(hero: Hero, target: Hero, sleeper: TickSleeper, config: OrbwalkConfig): boolean {
 	const isAttackingAnimation = hero.IsInAnimation && hero.LastAnimationIsAttack
 
 	if (isAttackingAnimation) {

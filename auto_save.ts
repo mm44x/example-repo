@@ -11,6 +11,7 @@ import {
 	ProjectileManager,
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
+
 import { claimOrder } from "./coordination"
 
 const FATAL_MODIFIERS = [
@@ -1245,10 +1246,7 @@ new (class AutoSaveUtility {
 			if (greaves && greaves.CanBeUsable && greaves.Cooldown <= 0.1) {
 				// 1. Check if we need to auto-dispel self
 				let shouldCastGreaves = false
-				if (
-					this.greavesAutoDispel.value &&
-					(hero.IsSilenced || hero.IsRooted)
-				) {
+				if (this.greavesAutoDispel.value && (hero.IsSilenced || hero.IsRooted)) {
 					shouldCastGreaves = true
 				}
 
@@ -1408,7 +1406,6 @@ new (class AutoSaveUtility {
 						!this.mantaOnlyDanger.value || this.isTargetInDanger(hero, 100, true, allHeroes, hero)
 					if (inDanger) {
 						this.executeAndClaimOrder(() => hero.CastNoTarget(manta), delay)
-						return
 					}
 				}
 			}

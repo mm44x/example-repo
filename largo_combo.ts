@@ -2,6 +2,7 @@ import {
 	Ability,
 	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
+	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
@@ -11,17 +12,14 @@ import {
 	Menu,
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
+
 import { executeOrbwalk } from "./orbwalker"
 
 new (class LargoCombo {
-	private readonly entry = Menu.AddEntry("mm44x").AddNode("Largo Combo")
+	private readonly entry = Menu.AddEntry("mm44x").AddNode("Combo Heroes").AddNode("Largo Combo")
 
 	// Enable/Disable combo
-	private readonly comboEnabled = this.entry.AddToggle(
-		"Enable Combo",
-		true,
-		"Enable/Disable Largo combo script"
-	)
+	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Largo combo script")
 	private readonly autoRhapsodySpells = this.entry.AddToggle(
 		"Auto Rhapsody Skills",
 		true,
@@ -111,10 +109,6 @@ new (class LargoCombo {
 		)
 	}
 
-
-
-
-
 	// ----------------------------------------------------------------
 	// Background Features
 	// ----------------------------------------------------------------
@@ -150,9 +144,15 @@ new (class LargoCombo {
 
 		// Kumpulkan semua song yang sedang ditekan sekarang
 		const pressed = new Set<string>()
-		if (fightPressed) pressed.add("largo_song_fight_song")
-		if (doublePressed) pressed.add("largo_song_double_time")
-		if (goodPressed) pressed.add("largo_song_good_vibrations")
+		if (fightPressed) {
+			pressed.add("largo_song_fight_song")
+		}
+		if (doublePressed) {
+			pressed.add("largo_song_double_time")
+		}
+		if (goodPressed) {
+			pressed.add("largo_song_good_vibrations")
+		}
 
 		// Cek apakah semua yang ditekan sudah aktif (untuk deselect)
 		const allAlreadySelected = Array.from(pressed).every(s => this.selectedRhapsodySongs.has(s))
@@ -194,7 +194,8 @@ new (class LargoCombo {
 		}
 
 		// Cek apakah hero punya Aghanim (bisa 2 song bersamaan)
-		const hasAghanim = hero.HasBuffByName("modifier_item_ultimate_scepter_consumed") ||
+		const hasAghanim =
+			hero.HasBuffByName("modifier_item_ultimate_scepter_consumed") ||
 			hero.HasBuffByName("modifier_item_ultimate_scepter")
 		const maxSongs = hasAghanim ? 2 : 1
 
@@ -211,12 +212,7 @@ new (class LargoCombo {
 			}
 
 			const ability = hero.GetAbilityByName(spellName)
-			if (
-				!ability ||
-				!ability.IsValid ||
-				ability.Cooldown > 0.1 ||
-				hero.Mana < ability.ManaCost
-			) {
+			if (!ability || !ability.IsValid || ability.Cooldown > 0.1 || hero.Mana < ability.ManaCost) {
 				continue
 			}
 
@@ -244,18 +240,11 @@ new (class LargoCombo {
 
 		if (allOnCooldown) {
 			const rhapsody = hero.GetAbilityByName("largo_amphibian_rhapsody")
-			if (
-				rhapsody &&
-				rhapsody.IsValid &&
-				rhapsody.Cooldown <= 0.1 &&
-				hero.Mana >= rhapsody.ManaCost
-			) {
-				const exitTarget = castTarget || hero
+			if (rhapsody && rhapsody.IsValid && rhapsody.Cooldown <= 0.1 && hero.Mana >= rhapsody.ManaCost) {
+				const exitTarget = target || hero
 				if (this.executeComboAbility(hero, rhapsody, exitTarget)) {
-					console.log(`[LargoCombo] Auto Rhapsody exit (selected songs on cooldown)`)
-					this.rhapsodySleeper.Sleep(
-						GameState.InputLag * 1000 + rhapsody.CastPoint * 1000 + 100
-					)
+					console.log("[LargoCombo] Auto Rhapsody exit (selected songs on cooldown)")
+					this.rhapsodySleeper.Sleep(GameState.InputLag * 1000 + rhapsody.CastPoint * 1000 + 100)
 					return true
 				}
 			}
@@ -274,7 +263,6 @@ new (class LargoCombo {
 	 * We handle this via songSleeper delay between casts.
 	 */
 
-
 	// ----------------------------------------------------------------
 	// Combo Ability Execution
 	// ----------------------------------------------------------------
@@ -283,15 +271,9 @@ new (class LargoCombo {
 	 * Eksekusi ability terhadap target, handling berbagai behavior type.
 	 */
 	private executeComboAbility(hero: Hero, ability: Ability, target: Hero): boolean {
-		const isNoTarget = ability.HasBehavior(
-			DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET
-		)
-		const isTarget = ability.HasBehavior(
-			DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET
-		)
-		const isPosition = ability.HasBehavior(
-			DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT
-		)
+		const isNoTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
+		const isTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
+		const isPosition = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
 
 		if (isNoTarget) {
 			ExecuteOrder.PrepareOrder({
@@ -304,9 +286,7 @@ new (class LargoCombo {
 			})
 			return true
 		} else if (isTarget) {
-			const isAllyTarget =
-				ability.Name === "largo_island_elixir" ||
-				ability.Name === "largo_croak_of_genius"
+			const isAllyTarget = ability.Name === "largo_island_elixir" || ability.Name === "largo_croak_of_genius"
 			const castTarget = isAllyTarget ? hero : target
 			ExecuteOrder.PrepareOrder({
 				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
@@ -394,8 +374,9 @@ new (class LargoCombo {
 
 		// --- Diagnostics log ---
 		if (!this.sleeper.Sleeping) {
-			const activeSpells = hero.Spells
-				.map((s, idx) => s ? `${idx}:${s.Name}(hidden=${s.IsHidden},level=${s.Level})` : `${idx}:null`)
+			const activeSpells = hero.Spells.map((s, idx) =>
+				s ? `${idx}:${s.Name}(hidden=${s.IsHidden},level=${s.Level})` : `${idx}:null`
+			)
 				.filter(s => !s.includes("null"))
 				.join(", ")
 			console.log(`[LargoCombo] Hero Buffs: ${hero.Buffs.map(b => b.Name).join(", ")}`)
@@ -423,8 +404,6 @@ new (class LargoCombo {
 			return
 		}
 
-
-
 		// --- Hero Spell Combo ---
 		if (this.sleeper.Sleeping) {
 			return
@@ -442,13 +421,7 @@ new (class LargoCombo {
 			}
 
 			const ability = hero.GetAbilityByName(spellName)
-			if (
-				!ability ||
-				!ability.IsValid ||
-				ability.IsHidden ||
-				ability.Level <= 0 ||
-				ability.Cooldown > 0.1
-			) {
+			if (!ability || !ability.IsValid || ability.IsHidden || ability.Level <= 0 || ability.Cooldown > 0.1) {
 				continue
 			}
 
@@ -499,8 +472,6 @@ new (class LargoCombo {
 
 			// --- Special handling per ability type ---
 
-
-
 			// Grab terkait damage/kendali: skip jika target immune
 			if (
 				(spellName === "largo_croak_of_genius" ||
@@ -516,13 +487,14 @@ new (class LargoCombo {
 				continue
 			}
 
-			console.log(`[LargoCombo] Attempting to cast: ${spellName} (slot: ${activeIndex}, level: ${ability.Level}, CD: ${ability.Cooldown})`)
+			console.log(
+				`[LargoCombo] Attempting to cast: ${spellName} (slot: ${activeIndex}, level: ${ability.Level}, CD: ${ability.Cooldown})`
+			)
 			if (this.executeComboAbility(hero, ability, bestTarget)) {
 				console.log(`[LargoCombo] Order sent for: ${spellName}`)
-				
+
 				const sleepDuration = GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100
 				this.sleeper.Sleep(sleepDuration)
-				
 
 				return
 			}

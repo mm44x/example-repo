@@ -18,9 +18,7 @@ import {
 	ProjectileManager,
 	TickSleeper,
 	Tower,
-	Unit,
-	UnitData,
-	WorldUtils
+	Unit
 } from "github.com/octarine-public/wrapper/index"
 
 const lastHitSleeper = new TickSleeper()
@@ -69,7 +67,7 @@ class CustomLastHit {
 
 	private updateUnitTargets(): void {
 		const currentTime = GameState.RawGameTime
-		
+
 		// Clean up invalid entities from the tracking map
 		for (const [attackerIndex, targetIndex] of this.unitTargets.entries()) {
 			const attacker = EntityManager.EntityByIndex<Unit>(attackerIndex)
@@ -84,7 +82,7 @@ class CustomLastHit {
 		for (const proj of projectiles) {
 			if (proj.IsValid && !proj.IsDodged && proj.Source && proj.Target && proj.Target instanceof Creep) {
 				this.unitTargets.set(proj.Source.Index, proj.Target.Index)
-				
+
 				// Track attack timing for better prediction
 				const record = this.unitAttackRecords.get(proj.Source.Index) || { lastAttackTime: 0, attackCount: 0 }
 				if (record.lastAttackTime > 0) {
@@ -126,7 +124,9 @@ class CustomLastHit {
 
 		// Helper to calculate actual damage after armor/block
 		const calculateActualDamage = (source: Unit, target: Creep, rawDamage: number): number => {
-			if (!source || !target || !target.IsValid) return rawDamage
+			if (!source || !target || !target.IsValid) {
+				return rawDamage
+			}
 
 			// Get target armor (creeps have base armor from UnitData)
 			const targetArmor = target.ArmorPhysical || 0
@@ -207,9 +207,7 @@ class CustomLastHit {
 			}
 
 			// Ensure unit is within attack range (towers have much larger range)
-			const maxRange = unit.IsTower
-				? unit.GetAttackRange(creep) + 100
-				: unit.GetAttackRange(creep) + 150
+			const maxRange = unit.IsTower ? unit.GetAttackRange(creep) + 100 : unit.GetAttackRange(creep) + 150
 			if (unit.Distance2D(creep) > maxRange) {
 				continue
 			}
@@ -235,7 +233,10 @@ class CustomLastHit {
 
 			let currentUnitLandTime = nextFireTime + travelTime
 			// Towers attack faster than creeps (usually 1.0 BAT for towers vs 1.5-1.7 for creeps)
-			const secondsPerAttack = Math.max(unit.IsTower ? 0.8 : 0.1, unit.SecondsPerAttack > 0 ? unit.SecondsPerAttack : 1.5)
+			const secondsPerAttack = Math.max(
+				unit.IsTower ? 0.8 : 0.1,
+				unit.SecondsPerAttack > 0 ? unit.SecondsPerAttack : 1.5
+			)
 
 			while (currentUnitLandTime <= landTime) {
 				const rawDamage = unit.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
@@ -334,16 +335,12 @@ class CustomLastHit {
 
 			// Apply armor reduction and damage block for OUR attack on this creep
 			const targetArmor = creep.ArmorPhysical || 0
-			const armorReduction = targetArmor * 0.06 / (1 + targetArmor * 0.06)
+			const armorReduction = (targetArmor * 0.06) / (1 + targetArmor * 0.06)
 			let damageBlock = 0
 			const unitData = creep.UnitData
 			if (unitData) {
 				const name = unitData.Name?.toLowerCase() || ""
-				if (name.includes("siege") || name.includes("ranged")) {
-					damageBlock = 2
-				} else {
-					damageBlock = 1
-				}
+				damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
 			}
 			const attackDamage = Math.max(1, rawAttackDamage * (1 - armorReduction) - damageBlock)
 
