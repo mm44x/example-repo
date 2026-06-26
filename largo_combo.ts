@@ -16,7 +16,9 @@ import {
 import { executeOrbwalk } from "./orbwalker"
 
 new (class LargoCombo {
-	private readonly entry = Menu.AddEntry("mm44x").AddNode("Combo Heroes").AddNode("Largo Combo")
+	private readonly entry = Menu.AddEntry("mm44x")
+		.AddNode("Combo Heroes", "menu/icons/juggernaut.svg")
+		.AddNode("Largo Combo", "panorama/images/heroes/icons/npc_dota_hero_largo_png.vtex_c", "", 0)
 
 	// Enable/Disable combo
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Largo combo script")

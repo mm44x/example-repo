@@ -42,7 +42,9 @@ const NATIVE_SPELLS = [
 ]
 
 new (class RubickCombo {
-	private readonly entry = Menu.AddEntry("mm44x").AddNode("Combo Heroes").AddNode("Rubick Combo")
+	private readonly entry = Menu.AddEntry("mm44x")
+		.AddNode("Combo Heroes", "menu/icons/juggernaut.svg")
+		.AddNode("Rubick Combo", "panorama/images/heroes/icons/npc_dota_hero_rubick_png.vtex_c", "", 0)
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Rubick combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
