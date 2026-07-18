@@ -99,10 +99,18 @@ new (class InvokerCombo {
 	private disruptSkills: any = null
 	private disruptInvis: any = null
 
+	private sunstrikeNode: any = null
+	private enableSunstrike: any = null
+	private sunstrikeOnStun: any = null
+	private sunstrikeOnWalk: any = null
+	private sunstrikeInvis: any = null
+	private sunstrikeHPThreshold: any = null
+
 	private autoSkillNode: any = null
 	private autoSkillConfigs: Map<string, { key: any; mode: any }> = new Map()
 	private pendingAutoSkill: string | null = null
 	private autoSkillCursorPos: Vector3 | null = null
+	private pendingSunstrikePos: Vector3 | null = null
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
@@ -212,6 +220,42 @@ new (class InvokerCombo {
 			"Disrupt in Invis",
 			false,
 			"Allow auto disrupt while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
+		)
+
+		// Auto Sunstrike
+		this.sunstrikeNode = this.entry.AddNode(
+			"Auto Sunstrike",
+			"panorama/images/spellicons/invoker_sun_strike_png.vtex_c",
+			"",
+			0
+		)
+		this.enableSunstrike = this.sunstrikeNode.AddToggle(
+			"Enable Auto Sunstrike",
+			true,
+			"Auto cast Sunstrike on stunned/channeled enemies or predicted walking low-HP enemies"
+		)
+		this.sunstrikeOnStun = this.sunstrikeNode.AddToggle(
+			"Sunstrike on Stunned/Channeled",
+			true,
+			"Cast Sunstrike on enemies that are stunned or channeling (outside Cold Snap/Tornado range)"
+		)
+		this.sunstrikeOnWalk = this.sunstrikeNode.AddToggle(
+			"Sunstrike Walking Prediction",
+			true,
+			"Predict enemy movement and Sunstrike if they're low enough to kill"
+		)
+		this.sunstrikeHPThreshold = this.sunstrikeNode.AddSlider(
+			"Walking Kill HP Threshold %",
+			25,
+			1,
+			60,
+			1,
+			"Only Sunstrike walking enemies whose HP is below this percentage for a potential kill"
+		)
+		this.sunstrikeInvis = this.sunstrikeNode.AddToggle(
+			"Sunstrike in Invis",
+			false,
+			"Allow auto Sunstrike while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
 		)
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
@@ -860,21 +904,35 @@ new (class InvokerCombo {
 				) {
 					const isChanneling =
 						enemy.IsChanneling ||
-						enemy.Buffs.some(b =>
-							b.Name === "modifier_teleporting" ||
-							b.Name.startsWith("modifier_enigma_black_hole") ||
-							b.Name.startsWith("modifier_pudge_dismember") ||
-							b.Name.startsWith("modifier_shadow_shaman_shackles") ||
-							b.Name.startsWith("modifier_bane_fiends_grip") ||
-							b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
-							b.Name.startsWith("modifier_witch_doctor_voodoo_swtich") ||
-							b.Name.startsWith("modifier_sandking_epicenter_channel") ||
-							b.Name.startsWith("modifier_monkey_king_primal_spring") ||
-							b.Name.startsWith("modifier_elder_titan_echo_stomp_channel") ||
-							b.Name.startsWith("modifier_tinker_rearm")
-						)
+						enemy.Buffs.some(b => {
+							// Don't disrupt if an ally is the one channeling
+							if (b.Name === "modifier_pudge_dismember" ||
+								b.Name.startsWith("modifier_bane_fiends_grip") ||
+								b.Name.startsWith("modifier_shadow_shaman_shackles")
+							) {
+								if (b.Caster && !b.Caster.IsEnemy(hero)) {
+									return false
+								}
+								return true
+							}
+							return (
+								b.Name === "modifier_teleporting" ||
+								b.Name.startsWith("modifier_enigma_black_hole") ||
+								b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+								b.Name.startsWith("modifier_witch_doctor_voodoo_swtich") ||
+								b.Name.startsWith("modifier_sandking_epicenter_channel") ||
+								b.Name.startsWith("modifier_monkey_king_primal_spring") ||
+								b.Name.startsWith("modifier_elder_titan_echo_stomp_channel") ||
+								b.Name.startsWith("modifier_tinker_rearm")
+							)
+						})
+					const isDuelingAlly = enemy.Buffs.some(b => {
+						if (!b.Name.startsWith("modifier_legion_commander_duel")) return false
+						if (!b.Caster) return true // can't verify, assume yes
+						return b.Caster.IsEnemy(hero)
+					})
 
-					if (!isChanneling) {
+					if (!isChanneling && !isDuelingAlly) {
 						continue
 					}
 					const dist = hero.Distance2D(enemy)
@@ -956,6 +1014,178 @@ new (class InvokerCombo {
 							console.log(`[InvokerCombo] Auto Disrupt: Cast ${chosenSpell} on ${disruptTarget.Name}`)
 							this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 							return
+						}
+					}
+				}
+			}
+		}
+
+		// --- Pending Sunstrike Cast ---
+		if (this.pendingSunstrikePos && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
+			const ss = hero.GetAbilityByName("invoker_sun_strike")
+			if (ss && ss.IsValid && !ss.IsHidden && ss.Cooldown <= 0.1 && hero.Mana >= ss.ManaCost) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+					issuers: [hero],
+					position: this.pendingSunstrikePos,
+					ability: ss.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				console.log(`[InvokerCombo] Auto Sunstrike: Cast pending at ${this.pendingSunstrikePos.x.toFixed(0)},${this.pendingSunstrikePos.y.toFixed(0)}`)
+				this.sleeper.Sleep(GameState.InputLag * 1000 + ss.CastPoint * 1000 + 200)
+			}
+			this.pendingSunstrikePos = null
+			return
+		}
+
+		// --- Auto Sunstrike ---
+		if (this.enableSunstrike && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+			if (!this.sunstrikeInvis.value && hero.IsInvisible) {
+				// skip invis check below
+			} else {
+				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+				const sunstrike = hero.GetAbilityByName("invoker_sun_strike")
+				if (sunstrike && sunstrike.IsValid && sunstrike.Level > 0 && invokeAbility && invokeAbility.IsValid) {
+					const ssActive = !sunstrike.IsHidden && sunstrike.Cooldown <= 0.1 && hero.Mana >= sunstrike.ManaCost
+					const canInvoke = invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
+					const ssInvokable = sunstrike.IsHidden && canInvoke && sunstrike.Cooldown <= 0.1 && hero.Mana >= (sunstrike.ManaCost + invokeAbility.ManaCost)
+
+					if (ssActive || ssInvokable) {
+						// --- Sunstrike on Stunned/Channeled ---
+						if (this.sunstrikeOnStun.value) {
+							for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+								if (!enemy.IsEnemy(hero) || !enemy.IsAlive || !enemy.IsVisible || enemy.IsIllusion || enemy.IsMagicImmune) {
+									continue
+								}
+								const isStunned = enemy.IsStunned
+								const isTeleporting = enemy.Buffs.some(b => b.Name === "modifier_teleporting")
+								const isRooted = enemy.IsRooted
+								const isBashed = enemy.Buffs.some(b => b.Name.startsWith("modifier_bashed"))
+								const isCycloned = enemy.Buffs.some(b =>
+									b.Name === "modifier_euler_cyclone" ||
+									b.Name === "modifier_wind_waker_active" ||
+									b.Name === "modifier_invoker_tornado"
+								)
+								const isChanneling =
+									enemy.IsChanneling ||
+									enemy.Buffs.some(b =>
+										b.Name === "modifier_teleporting" ||
+										b.Name.startsWith("modifier_enigma_black_hole") ||
+										b.Name.startsWith("modifier_pudge_dismember") ||
+										b.Name.startsWith("modifier_bane_fiends_grip") ||
+										b.Name.startsWith("modifier_shadow_shaman_shackles") ||
+										b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+										b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
+									)
+								const isDueled = enemy.Buffs.some(b => b.Name.startsWith("modifier_legion_commander_duel"))
+
+								if (!isStunned && !isChanneling && !isDueled && !isRooted && !isBashed) {
+									// Check cycloned separately (timed)
+									if (!isCycloned) {
+										continue
+									}
+								}
+
+								// For cycloned enemies, time the sunstrike to hit when they land
+								if (isCycloned) {
+									const cycloneBuff = enemy.Buffs.find(b =>
+										b.Name === "modifier_euler_cyclone" ||
+										b.Name === "modifier_wind_waker_active" ||
+										b.Name === "modifier_invoker_tornado"
+									)
+									if (cycloneBuff) {
+										const rem = cycloneBuff.RemainingTime
+										if (ssActive && (rem > 2.0 || rem < 1.5)) {
+											continue
+										}
+										if (!ssActive && (rem > 2.2 || rem < 1.7)) {
+											continue
+										}
+									}
+								}
+								// Skip if Cold Snap or Tornado can reach (they handle it in auto disrupt)
+								const dist = hero.Distance2D(enemy)
+								if (dist <= 2500 && isTeleporting) {
+									continue
+								}
+
+								const castPos = enemy.Position.Clone()
+								if (ssActive) {
+									ExecuteOrder.PrepareOrder({
+										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+										issuers: [hero],
+										position: castPos,
+										ability: sunstrike.Index,
+										queue: false,
+										showEffects: true,
+										isPlayerInput: false
+									})
+									console.log(`[InvokerCombo] Auto Sunstrike: Cast on stunned/channeled ${enemy.Name}`)
+									this.sleeper.Sleep(GameState.InputLag * 1000 + sunstrike.CastPoint * 1000 + 200)
+									this.pendingSunstrikePos = null
+									return
+								} else if (ssInvokable) {
+									if (this.invokeSpell(hero, "invoker_sun_strike", invokeAbility)) {
+										this.pendingSunstrikePos = castPos
+										console.log(`[InvokerCombo] Auto Sunstrike: Invoking for ${enemy.Name}`)
+										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+										return
+									}
+								}
+								break
+							}
+						}
+
+						// --- Sunstrike Walking Prediction ---
+						if (this.sunstrikeOnWalk.value && (ssActive || ssInvokable)) {
+							for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+								if (!enemy.IsEnemy(hero) || !enemy.IsAlive || !enemy.IsVisible || enemy.IsIllusion || enemy.IsMagicImmune) {
+									continue
+								}
+								const hpPct = (enemy.HP / enemy.MaxHP) * 100
+								if (hpPct > this.sunstrikeHPThreshold.value) {
+									continue
+								}
+								const dist = hero.Distance2D(enemy)
+								if (dist > 12000) {
+									continue
+								}
+								if (!enemy.IsMoving) {
+									continue
+								}
+								// Predict position: 1.7s sunstrike delay * movement speed
+								const moveSpeed = enemy.MovementSpeed > 0 ? enemy.MovementSpeed : 350
+								const predTime = 1.7
+								const predDistance = moveSpeed * predTime
+								const forward = enemy.Forward
+								const predictedPos = enemy.Position.Add(forward.MultiplyScalar(predDistance))
+
+								if (ssActive) {
+									ExecuteOrder.PrepareOrder({
+										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+										issuers: [hero],
+										position: predictedPos,
+										ability: sunstrike.Index,
+										queue: false,
+										showEffects: true,
+										isPlayerInput: false
+									})
+									console.log(`[InvokerCombo] Auto Sunstrike: Predicted walking ${enemy.Name} at ${hpPct.toFixed(0)}% HP`)
+									this.sleeper.Sleep(GameState.InputLag * 1000 + sunstrike.CastPoint * 1000 + 200)
+									this.pendingSunstrikePos = null
+									return
+								} else if (ssInvokable) {
+									if (this.invokeSpell(hero, "invoker_sun_strike", invokeAbility)) {
+										this.pendingSunstrikePos = predictedPos
+										console.log(`[InvokerCombo] Auto Sunstrike: Invoking for walking ${enemy.Name}`)
+										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+										return
+									}
+								}
+								break
+							}
 						}
 					}
 				}
