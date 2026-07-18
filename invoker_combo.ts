@@ -54,7 +54,7 @@ new (class InvokerCombo {
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_cyclone", "item_wind_waker", "item_sheepstick", "item_orchid", "item_bloodthorn", "item_urn_of_shadows", "item_spirit_vessel", "item_shivas_guard", "item_refresher"],
+		["item_blink", "item_cyclone", "item_wind_waker", "item_sheepstick", "item_orchid", "item_bloodthorn", "item_nullifier", "item_urn_of_shadows", "item_spirit_vessel", "item_shivas_guard", "item_refresher"],
 		new Map([
 			["item_blink", true],
 			["item_cyclone", true],
@@ -62,6 +62,7 @@ new (class InvokerCombo {
 			["item_sheepstick", true],
 			["item_orchid", true],
 			["item_bloodthorn", true],
+			["item_nullifier", true],
 			["item_urn_of_shadows", true],
 			["item_spirit_vessel", true],
 			["item_shivas_guard", true],
@@ -92,6 +93,11 @@ new (class InvokerCombo {
 	private comboSequenceGrid: any
 	private lockedTarget: Hero | undefined = undefined
 	private readonly sleeper = new TickSleeper()
+
+	private disruptNode: any = null
+	private enableDisrupt: any = null
+	private disruptSkills: any = null
+	private disruptInvis: any = null
 
 	private autoSkillNode: any = null
 	private autoSkillConfigs: Map<string, { key: any; mode: any }> = new Map()
@@ -180,6 +186,33 @@ new (class InvokerCombo {
 			)
 			this.autoSkillConfigs.set(internalName, { key: hotkey, mode })
 		}
+
+		// Auto Disrupt Channeling
+		this.disruptNode = this.entry.AddNode(
+			"Auto Disrupt",
+			"panorama/images/spellicons/invoker_cold_snap_png.vtex_c",
+			"",
+			0
+		)
+		this.enableDisrupt = this.disruptNode.AddToggle(
+			"Enable Auto Disrupt",
+			true,
+			"Auto cancel enemy channeling (TP, Enigma ult, etc.) using Cold Snap (close) or Tornado (far)"
+		)
+		this.disruptSkills = this.disruptNode.AddImageSelector(
+			"Disrupt Skills",
+			["invoker_cold_snap", "invoker_tornado"],
+			new Map([
+				["invoker_cold_snap", true],
+				["invoker_tornado", true]
+			]),
+			"Toggle which skills to use for disrupting"
+		)
+		this.disruptInvis = this.disruptNode.AddToggle(
+			"Disrupt in Invis",
+			false,
+			"Allow auto disrupt while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
+		)
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
@@ -810,6 +843,125 @@ new (class InvokerCombo {
 			return
 		}
 
+		// --- Auto Disrupt Channeling ---
+		if (this.enableDisrupt && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+			if (!this.disruptInvis.value && hero.IsInvisible) {
+				return
+			}
+
+			let disruptTarget: Hero | undefined
+			let minDist = Infinity
+			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+				if (
+					enemy.IsEnemy(hero) &&
+					enemy.IsAlive &&
+					!enemy.IsIllusion &&
+					!enemy.IsMagicImmune
+				) {
+					const isChanneling =
+						enemy.IsChanneling ||
+						enemy.Buffs.some(b =>
+							b.Name === "modifier_teleporting" ||
+							b.Name.startsWith("modifier_enigma_black_hole") ||
+							b.Name.startsWith("modifier_pudge_dismember") ||
+							b.Name.startsWith("modifier_shadow_shaman_shackles") ||
+							b.Name.startsWith("modifier_bane_fiends_grip") ||
+							b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+							b.Name.startsWith("modifier_witch_doctor_voodoo_swtich") ||
+							b.Name.startsWith("modifier_sandking_epicenter_channel") ||
+							b.Name.startsWith("modifier_monkey_king_primal_spring") ||
+							b.Name.startsWith("modifier_elder_titan_echo_stomp_channel") ||
+							b.Name.startsWith("modifier_tinker_rearm")
+						)
+
+					if (!isChanneling) {
+						continue
+					}
+					const dist = hero.Distance2D(enemy)
+					if (dist < minDist) {
+						minDist = dist
+						disruptTarget = enemy
+					}
+				}
+			}
+
+			if (disruptTarget) {
+				const useColdSnap = this.disruptSkills.IsEnabled("invoker_cold_snap")
+				const useTornado = this.disruptSkills.IsEnabled("invoker_tornado")
+				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+				const canInvoke = invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
+				const coldSnapRange = 1000
+
+				let chosenSpell = ""
+
+				// Check Cold Snap availability (active or can be invoked)
+				if (useColdSnap && minDist <= coldSnapRange) {
+					const coldSnap = hero.GetAbilityByName("invoker_cold_snap")
+					if (coldSnap && coldSnap.IsValid && coldSnap.Level > 0) {
+						const csActive = !coldSnap.IsHidden && coldSnap.Cooldown <= 0.1 && hero.Mana >= coldSnap.ManaCost
+						const csInvokable = coldSnap.IsHidden && canInvoke && coldSnap.Cooldown <= 0.1 && hero.Mana >= (coldSnap.ManaCost + invokeAbility.ManaCost)
+						if (csActive || csInvokable) {
+							chosenSpell = "invoker_cold_snap"
+						}
+					}
+				}
+
+				// Fallback to Tornado
+				if (chosenSpell === "" && useTornado) {
+					const tornado = hero.GetAbilityByName("invoker_tornado")
+					if (tornado && tornado.IsValid && tornado.Level > 0) {
+						const tActive = !tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
+						const tInvokable = tornado.IsHidden && canInvoke && tornado.Cooldown <= 0.1 && hero.Mana >= (tornado.ManaCost + invokeAbility.ManaCost)
+						if (tActive || tInvokable) {
+							chosenSpell = "invoker_tornado"
+						}
+					}
+				}
+
+				if (chosenSpell !== "") {
+					const ability = hero.GetAbilityByName(chosenSpell)
+					const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+					if (ability && ability.IsValid && ability.Level > 0) {
+						const isActive = !ability.IsHidden
+						if (!isActive) {
+							if (invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost) {
+								if (this.invokeSpell(hero, chosenSpell, invokeAbility)) {
+									console.log(`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`)
+									this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+									return
+								}
+							}
+						} else if (ability.Cooldown <= 0.1 && hero.Mana >= ability.ManaCost) {
+							if (chosenSpell === "invoker_cold_snap") {
+								ExecuteOrder.PrepareOrder({
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+									issuers: [hero],
+									target: disruptTarget.Index,
+									ability: ability.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								})
+							} else {
+								ExecuteOrder.PrepareOrder({
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+									issuers: [hero],
+									position: disruptTarget.Position,
+									ability: ability.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								})
+							}
+							console.log(`[InvokerCombo] Auto Disrupt: Cast ${chosenSpell} on ${disruptTarget.Name}`)
+							this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+							return
+						}
+					}
+				}
+			}
+		}
+
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
 			return
@@ -885,6 +1037,11 @@ new (class InvokerCombo {
 			}
 
 			if (this.useTargetItem(hero, "item_sheepstick", bestTarget)) {
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+				return
+			}
+
+			if (this.useTargetItem(hero, "item_nullifier", bestTarget)) {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 				return
 			}
