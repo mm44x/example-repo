@@ -888,10 +888,9 @@ new (class InvokerCombo {
 		}
 
 		// --- Auto Disrupt Channeling ---
-		if (this.enableDisrupt && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
-			if (!this.disruptInvis.value && hero.IsInvisible) {
-				return
-			}
+		// @ts-ignore
+		if (this.enableDisrupt && !this.comboKey.isPressed && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+			if (this.disruptInvis.value || !hero.IsInvisible) {
 
 			let disruptTarget: Hero | undefined
 			let minDist = Infinity
@@ -970,7 +969,8 @@ new (class InvokerCombo {
 					if (tornado && tornado.IsValid && tornado.Level > 0) {
 						const tActive = !tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
 						const tInvokable = tornado.IsHidden && canInvoke && tornado.Cooldown <= 0.1 && hero.Mana >= (tornado.ManaCost + invokeAbility.ManaCost)
-						if (tActive || tInvokable) {
+						const tornadoRange = tornado.CastRange > 0 ? tornado.CastRange : 2000
+						if ((tActive || tInvokable) && minDist <= tornadoRange) {
 							chosenSpell = "invoker_tornado"
 						}
 					}
@@ -1018,6 +1018,7 @@ new (class InvokerCombo {
 					}
 				}
 			}
+			}
 		}
 
 		// --- Pending Sunstrike Cast ---
@@ -1041,7 +1042,8 @@ new (class InvokerCombo {
 		}
 
 		// --- Auto Sunstrike ---
-		if (this.enableSunstrike && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+		// @ts-ignore
+		if (this.enableSunstrike && !this.comboKey.isPressed && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
 			if (!this.sunstrikeInvis.value && hero.IsInvisible) {
 				// skip invis check below
 			} else {
