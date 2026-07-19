@@ -1090,6 +1090,24 @@ new (class InvokerCombo {
 									}
 								}
 
+								// Skip channeling or stunned enemies that are moving
+								// (e.g. Skewer cast point, Pudge Meat Hook drag, Force Staff)
+								if ((isChanneling || isStunned) && enemy.IsMoving) {
+									continue
+								}
+
+								// If only generic IsChanneling (no specific modifier), skip — unreliable cast-point detection
+								if (isChanneling && !isTeleporting && !enemy.Buffs.some(b =>
+									b.Name.startsWith("modifier_enigma_black_hole") ||
+									b.Name.startsWith("modifier_pudge_dismember") ||
+									b.Name.startsWith("modifier_bane_fiends_grip") ||
+									b.Name.startsWith("modifier_shadow_shaman_shackles") ||
+									b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+									b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
+								)) {
+									continue
+								}
+
 								// For cycloned enemies, time the sunstrike to hit when they land
 								if (isCycloned) {
 									const cycloneBuff = enemy.Buffs.find(b =>

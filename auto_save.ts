@@ -773,6 +773,9 @@ new (class AutoSaveUtility {
 				const castRange = grave.CastRange > 0 ? grave.CastRange : 600
 
 				for (const target of orderedAllies) {
+					if (target.HasBuffByName("modifier_dazzle_shallow_grave")) {
+						continue
+					}
 					if (
 						this.shouldSaveTarget(
 							target,
@@ -1100,8 +1103,7 @@ new (class AutoSaveUtility {
 							// Prevent EBlade on ally if under or targeted by magic threat
 							if (!this.isUnderOrTargetedByMagicThreat(target, allHeroes)) {
 								if (hero.Distance2D(target, true) <= castRange) {
-									hero.CastTarget(eblade, target)
-									this.castSleeper.Sleep(delay)
+									this.executeAndClaimOrder(() => hero.CastTarget(eblade, target), delay)
 									return
 								}
 							}

@@ -100,10 +100,21 @@ new (class RubickCombo {
 	private dragOffsetX = 0
 	private dragOffsetY = 0
 	private dragSpellName: string | undefined = undefined
+	private firstFrameCleanup = true
 
 	constructor() {
 		this.autoStealGrid = this.autoStealNode.AddDynamicImageSelector("Spells", [], new Map())
 		this.autoCastGrid = this.autoCastNode.AddDynamicImageSelector("Spells", [], new Map())
+
+		// Immediately strip any stale spell data loaded from config
+		// (leftover from previous game or F7 reload). Grids repopulate
+		// dynamically in PostDataUpdate each frame.
+		this.autoStealGrid.enabledValues.clear()
+		this.autoStealGrid.values.length = 0
+		this.autoStealGrid.Update()
+		this.autoCastGrid.enabledValues.clear()
+		this.autoCastGrid.values.length = 0
+		this.autoCastGrid.Update()
 
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
 		defaultCombo.set("rubick_telekinesis", [true, true, true, 0])
@@ -132,29 +143,26 @@ new (class RubickCombo {
 	private onGameEnded(): void {
 		this.sleeper.Sleep(0)
 		this.stealSleeper.Sleep(0)
-		this.autoStealGrid = null
-		this.autoCastGrid = null
-		this.comboSequenceGrid = null
 		this.isDraggingHud = false
 		this.dragSpellName = undefined
-		// Reinitialize grids for the next game
-		this.reinitializeGrids()
-	}
+		this.firstFrameCleanup = true
 
-	private reinitializeGrids(): void {
-		this.autoStealGrid = this.autoStealNode.AddDynamicImageSelector("Spells", [], new Map())
-		this.autoCastGrid = this.autoCastNode.AddDynamicImageSelector("Spells", [], new Map())
-
-		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
-		defaultCombo.set("rubick_telekinesis", [true, true, true, 0])
-		defaultCombo.set("rubick_fade_bolt", [true, true, true, 1])
-		defaultCombo.set("rubick_spell_steal", [true, true, true, 2])
-
-		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
-			"Combo Order",
-			["rubick_telekinesis", "rubick_fade_bolt", "rubick_spell_steal"],
-			defaultCombo
-		)
+		// Clear grid data instead of recreating grids.
+		// Recreating creates duplicate entries in Menu tree that
+		// persist stale spell data across games via config save/load.
+		if (this.autoStealGrid) {
+			this.autoStealGrid.enabledValues.clear()
+			this.autoStealGrid.values.length = 0
+			this.autoStealGrid.Update()
+		}
+		if (this.autoCastGrid) {
+			this.autoCastGrid.enabledValues.clear()
+			this.autoCastGrid.values.length = 0
+			this.autoCastGrid.Update()
+		}
+		if (this.comboSequenceGrid) {
+			this.comboSequenceGrid.ResetToDefault()
+		}
 	}
 
 	private IsAbilityVisibleOnHUD(abil: Ability | undefined): abil is Ability {
@@ -804,30 +812,100 @@ new (class RubickCombo {
 			return
 		}
 
-		// Secara dinamis mendaftarkan spell musuh ke dalam menu Auto Steal
+		// One-time cleanup on first frame to strip any stale spell data
+		// that the config loader dumped into the grids (from previous games).
+		if (this.firstFrameCleanup) {
+			this.firstFrameCleanup = false
+			if (this.autoStealGrid.values.length > 0) {
+				this.autoStealGrid.enabledValues.clear()
+				this.autoStealGrid.values.length = 0
+				this.autoStealGrid.Update()
+			}
+			if (this.autoCastGrid.values.length > 0) {
+				this.autoCastGrid.enabledValues.clear()
+				this.autoCastGrid.values.length = 0
+				this.autoCastGrid.Update()
+				Menu.Base.SaveConfigASAP = true
+			}
+		}
+
+		// Build sets of currently valid spell names
+		const enemySpellNames = new Set<string>()
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
 			if (enemy && enemy.IsValid && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
 				for (const abil of enemy.Spells) {
 					if (this.isValidSpell(abil)) {
-						if (!this.autoStealGrid.values.includes(abil.Name)) {
-							this.autoStealGrid.OnAddNewImage(abil.Name, true, true)
-						}
+						enemySpellNames.add(abil.Name)
 					}
 				}
 			}
 		}
 
-		// Secara dinamis mendaftarkan spell yang dicuri ke dalam menu
-		const abilities = hero.Spells
+		const stolenSpellNames = new Set<string>()
 		const stolenSpells: Ability[] = []
-
-		for (const abil of abilities) {
+		for (const abil of hero.Spells) {
 			if (this.isValidSpell(abil)) {
 				stolenSpells.push(abil)
-				if (!this.autoCastGrid.values.includes(abil.Name)) {
-					this.autoCastGrid.OnAddNewImage(abil.Name, true, true)
-				}
+				stolenSpellNames.add(abil.Name)
 			}
+		}
+
+		// Remove stale entries from autoStealGrid (spells from enemies no longer in game)
+		let gridDirty = false
+		for (const name of [...this.autoStealGrid.values]) {
+			if (!enemySpellNames.has(name)) {
+				this.autoStealGrid.enabledValues.delete(name)
+				this.autoStealGrid.values.splice(this.autoStealGrid.values.indexOf(name), 1)
+				gridDirty = true
+			}
+		}
+
+		// Remove stale entries from autoCastGrid (spells Rubick no longer holds)
+		for (const name of [...this.autoCastGrid.values]) {
+			if (!stolenSpellNames.has(name)) {
+				this.autoCastGrid.enabledValues.delete(name)
+				this.autoCastGrid.values.splice(this.autoCastGrid.values.indexOf(name), 1)
+				gridDirty = true
+			}
+		}
+
+		// Register new enemy spells — bypass QueuedUpdate by writing to enabledValues directly
+		for (const name of enemySpellNames) {
+			if (!this.autoStealGrid.values.includes(name)) {
+				this.autoStealGrid.values.push(name)
+			}
+			if (!this.autoStealGrid.enabledValues.has(name)) {
+				this.autoStealGrid.enabledValues.set(name, [
+					true,
+					true,
+					true,
+					this.autoStealGrid.enabledValues.size
+				])
+				gridDirty = true
+			}
+		}
+
+		// Register stolen spells — bypass QueuedUpdate so they're auto-castable immediately
+		for (const name of stolenSpellNames) {
+			if (!this.autoCastGrid.values.includes(name)) {
+				this.autoCastGrid.values.push(name)
+			}
+			if (!this.autoCastGrid.enabledValues.has(name)) {
+				this.autoCastGrid.enabledValues.set(name, [
+					true,
+					true,
+					true,
+					this.autoCastGrid.enabledValues.size
+				])
+				gridDirty = true
+			}
+		}
+
+		// Update grid UI and persist clean state to config
+		if (gridDirty) {
+			this.autoStealGrid.Update()
+			this.autoCastGrid.Update()
+			Menu.Base.SaveConfigASAP = true
 		}
 
 		// Validasi apakah tombol combo ditekan
