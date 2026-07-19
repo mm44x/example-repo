@@ -26,6 +26,11 @@ new (class MagnusCombo {
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Magnus combo script")
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Magnus combo")
+	private readonly lockTargetEnabled = this.entry.AddToggle(
+		"Lock Target During Combo",
+		true,
+		"If enabled, locks onto a single target hero when pressing the combo key. If disabled, targets the enemy closest to your cursor on each tick."
+	)
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
 	private readonly allySearchRadius = this.entry.AddSlider(
 		"Ally Search Distance (Skewer)",
@@ -137,19 +142,7 @@ new (class MagnusCombo {
 			return
 		}
 
-		// Verify existing locked target
-		if (this.lockedTarget) {
-			if (
-				!this.lockedTarget.IsValid ||
-				!this.lockedTarget.IsAlive ||
-				!this.lockedTarget.IsVisible ||
-				this.lockedTarget.IsIllusion
-			) {
-				this.lockedTarget = undefined
-				this.currentSetup = undefined
-				this.comboStep = "idle"
-			}
-		}
+
 
 		// Items checks
 		const blink = hero.Items.find(
@@ -200,8 +193,47 @@ new (class MagnusCombo {
 			hero.Mana >= skewer.ManaCost &&
 			this.comboSequenceGrid.IsEnabled("magnataur_skewer")
 
-		// Target Selection (nearest to cursor) if not locked
-		if (!this.lockedTarget) {
+		// Target Selection & Verification
+		let bestTarget: Hero | undefined
+		const lockTarget = this.lockTargetEnabled.value
+
+		if (lockTarget) {
+			if (this.lockedTarget) {
+				if (
+					!this.lockedTarget.IsValid ||
+					!this.lockedTarget.IsAlive ||
+					!this.lockedTarget.IsVisible ||
+					this.lockedTarget.IsIllusion
+				) {
+					this.lockedTarget = undefined
+					this.currentSetup = undefined
+					this.comboStep = "idle"
+				}
+			}
+
+			if (!this.lockedTarget) {
+				const maxCastRange = 1200
+				const mousePos = InputManager.CursorOnWorld
+				let foundTarget: Hero | undefined
+				let minDist = Infinity
+
+				for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+						const distToCursor = enemy.Position.Distance2D(mousePos)
+						const distToHero = hero.Distance2D(enemy)
+						if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
+							minDist = distToCursor
+							foundTarget = enemy
+						}
+					}
+				}
+
+				if (foundTarget) {
+					this.lockedTarget = foundTarget
+				}
+			}
+			bestTarget = this.lockedTarget
+		} else {
 			const maxCastRange = 1200
 			const mousePos = InputManager.CursorOnWorld
 			let foundTarget: Hero | undefined
@@ -217,13 +249,13 @@ new (class MagnusCombo {
 					}
 				}
 			}
-
-			if (foundTarget) {
+			if (foundTarget !== this.lockedTarget) {
 				this.lockedTarget = foundTarget
+				this.currentSetup = undefined
+				this.comboStep = "idle"
 			}
+			bestTarget = foundTarget
 		}
-
-		const bestTarget = this.lockedTarget
 		if (!bestTarget) {
 			return
 		}

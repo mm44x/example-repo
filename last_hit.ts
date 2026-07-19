@@ -1,6 +1,5 @@
 import {
 	Ability,
-	ATTACK_DAMAGE_STRENGTH,
 	Color,
 	Creep,
 	DOTA_ABILITY_BEHAVIOR,
@@ -23,17 +22,44 @@ import {
 
 const lastHitSleeper = new TickSleeper()
 
+// Track the last attack target to avoid self-canceling
+let lastAttackTargetIdx = -1
+let lastAttackOrderTime = 0
+
+function sleepTime(hero?: Hero): number {
+	const base = Math.randomRange(GameState.InputLag, GameState.InputLag + 1 / 60) * 1000
+	// If hero is in attack animation, sleep at least until animation completes
+	// to prevent canceling our own attack. Add ~30ms buffer for ping variance.
+	if (hero && hero.IsInAnimation && hero.LastAnimationIsAttack && !hero.LastAnimationCasted) {
+		const remainingMs = Math.max(
+			0,
+			(hero.LastAnimationStartTime + hero.LastAnimationCastPoint - GameState.RawServerTime) * 1000 + 30
+		)
+		return Math.max(base + 50, remainingMs)
+	}
+	return base + 50
+}
+
 class CustomLastHit {
 	private readonly entry = Menu.AddEntry("mm44x").AddNode("Custom Last Hit")
 
-	private readonly lastHitKey = this.entry.AddKeybind("Hold Key", "Space", "Hold to auto last hit and deny")
-	private readonly spellsKey = this.entry.AddKeybind("Spells Key", "None", "Hold to auto last hit using spells")
+	private readonly enabled = this.entry.AddToggle("Enable Script", true, "Toggle to enable/disable auto last hit")
+	private readonly lastHitKey = this.entry.AddKeybind(
+		"Hold Key",
+		"Space",
+		"Hold to auto last hit and deny"
+	)
+	private readonly spellsKey = this.entry.AddKeybind(
+		"Spells Key",
+		"None",
+		"Hold to auto last hit using spells"
+	)
 	private readonly denyEnabled = this.entry.AddToggle("Deny Friendly Creeps", true)
 	private readonly prioritySetting = this.entry.AddDropdown(
 		"Action Priority",
 		["Last Hit", "Deny"],
 		0,
-		"Select which action to prioritize"
+		"Select which action to prioritize (LastHit = prioritize last hit, Deny = prioritize deny when both are possible)"
 	)
 	private readonly spellsEnabled = this.entry.AddToggle("Use Spells for Last Hit", false)
 	private readonly showAttackRange = this.entry.AddToggle("Show Attack Range", false)
@@ -45,12 +71,17 @@ class CustomLastHit {
 
 	private readonly harassNode = this.entry.AddNode("Harass Options")
 	private readonly harassEnabled = this.harassNode.AddToggle("Harass Enemy Heroes", true)
-	private readonly aggressiveHarass = this.harassNode.AddToggle("Aggressive Harass (Ignore aggro/tower)", false)
-	private readonly harassSearchRadius = this.harassNode.AddSlider("Harass Search Radius", 800, 300, 1500)
+	private readonly aggressiveHarass = this.harassNode.AddToggle(
+		"Aggressive Harass (Ignore aggro/tower)",
+		false
+	)
+	private readonly harassSearchRadius = this.harassNode.AddSlider(
+		"Harass Search Radius",
+		800,
+		300,
+		1500
+	)
 
-	// Track attack timing for more accurate predictions
-	private readonly unitAttackRecords = new Map<number, { lastAttackTime: number; attackCount: number }>()
-	private readonly unitTargets = new Map<number, number>()
 	private readonly pSDK = new ParticlesSDK()
 
 	constructor() {
@@ -59,184 +90,298 @@ class CustomLastHit {
 	}
 
 	private onGameEnded(): void {
-		this.unitTargets.clear()
-		this.unitAttackRecords.clear()
 		lastHitSleeper.Sleep(0)
 		this.pSDK.DestroyAll()
 	}
 
-	private updateUnitTargets(): void {
-		const currentTime = GameState.RawGameTime
+	/**
+	 * Calculate when our hero's attack projectile will land on the creep.
+	 * Accounts for: turn time, attack point (windup), and projectile travel time for ranged heroes.
+	 */
+	private getHeroAttackLandTime(hero: Hero, creep: Creep): number {
+		const now = GameState.RawServerTime
+		const turnTime = hero.TurnTimeNew(creep.Position, false)
 
-		// Clean up invalid entities from the tracking map
-		for (const [attackerIndex, targetIndex] of this.unitTargets.entries()) {
-			const attacker = EntityManager.EntityByIndex<Unit>(attackerIndex)
-			const target = EntityManager.EntityByIndex<Unit>(targetIndex)
-			if (!attacker || !attacker.IsValid || !attacker.IsAlive || !target || !target.IsValid || !target.IsAlive) {
-				this.unitTargets.delete(attackerIndex)
-			}
+		// GetNextAttackPoint accounts for current animation state and input lag
+		const attackPoint = hero.GetNextAttackPoint(GameState.InputLag)
+
+		// Projectile travel time (0 for melee)
+		let travelTime = 0
+		if (hero.IsRanged) {
+			const dist = hero.Distance2D(creep)
+			const speed =
+				hero.AttackProjectileSpeed > 0 ? hero.AttackProjectileSpeed : 1000
+			travelTime = Math.max(0, dist / speed)
 		}
 
-		// Update target tracking from active tracking projectiles
-		const projectiles = ProjectileManager.AllTrackingProjectiles
-		for (const proj of projectiles) {
-			if (proj.IsValid && !proj.IsDodged && proj.Source && proj.Target && proj.Target instanceof Creep) {
-				this.unitTargets.set(proj.Source.Index, proj.Target.Index)
-
-				// Track attack timing for better prediction
-				const record = this.unitAttackRecords.get(proj.Source.Index) || { lastAttackTime: 0, attackCount: 0 }
-				if (record.lastAttackTime > 0) {
-					const timeSinceLastAttack = currentTime - record.lastAttackTime
-					// If attack interval matches expected attack speed, record it
-					if (timeSinceLastAttack > 0.1) {
-						record.attackCount++
-					}
-				}
-				record.lastAttackTime = currentTime
-				this.unitAttackRecords.set(proj.Source.Index, record)
-			}
-		}
-
-		// Update target tracking from current unit/tower targets
-		const allUnits = EntityManager.GetEntitiesByClass(Unit)
-		for (const unit of allUnits) {
-			if (!unit.IsValid || !unit.IsAlive || !unit.IsVisible) {
-				continue
-			}
-			const target = unit.Target
-			if (target && target instanceof Creep) {
-				this.unitTargets.set(unit.Index, target.Index)
-			}
-		}
+		return now + GameState.InputLag + turnTime + attackPoint + travelTime
 	}
 
-	private predictCreepHealth(hero: Hero, creep: Creep, landTime: number): number {
-		const currentTime = GameState.RawServerTime
-		const timeDelta = Math.max(0, landTime - currentTime)
-		let predictedHP = creep.HP
+	/**
+	 * Calculate when the nearest enemy hero could land an attack on this creep.
+	 * Returns { landTime, attackDamage } or null if no enemy hero is in range.
+	 * Used to determine if we're racing an enemy for the last hit.
+	 */
+	private getFastestEnemyLastHit(hero: Hero, creep: Creep): { landTime: number, attackDamage: number, hero: Hero } | null {
+		const now = GameState.RawServerTime
+		let best: { landTime: number, attackDamage: number, hero: Hero } | null = null
 
-		// Account for HP regeneration over time
-		// Creeps regen ~0.5-2 HP/sec normally, more with aura effects
-		if (timeDelta > 0) {
-			const hpRegen = creep.HPRegen || 0
-			predictedHP += hpRegen * timeDelta
-		}
-
-		// Helper to calculate actual damage after armor/block
-		const calculateActualDamage = (source: Unit, target: Creep, rawDamage: number): number => {
-			if (!source || !target || !target.IsValid) {
-				return rawDamage
+		const allHeroes = EntityManager.GetEntitiesByClass(Hero)
+		for (const enemy of allHeroes) {
+			if (
+				!enemy.IsValid ||
+				!enemy.IsAlive ||
+				!enemy.IsVisible ||
+				!enemy.IsEnemy(hero) ||
+				enemy.IsIllusion ||
+				enemy.IsDisarmed
+			) {
+				continue
 			}
 
-			// Get target armor (creeps have base armor from UnitData)
-			const targetArmor = target.Armor || 0
+			const attackRange = enemy.GetAttackRange(creep)
+			const dist = enemy.Distance2D(creep)
+			if (dist > attackRange + enemy.HullRadius + creep.HullRadius + 100) {
+				continue
+			}
 
-			// Standard Dota armor formula (handles both positive and negative armor)
-			const armorMultiplier = targetArmor >= 0 ? 1 / (1 + 0.06 * targetArmor) : 2 - Math.pow(0.94, -targetArmor)
+			const turnTime = enemy.TurnTimeNew(creep.Position, false)
+			const attackPoint = enemy.GetNextAttackPoint(GameState.InputLag)
+			let travelTime = 0
+			if (enemy.IsRanged) {
+				const speed = enemy.AttackProjectileSpeed > 0 ? enemy.AttackProjectileSpeed : 1000
+				travelTime = dist / speed
+			}
 
-			// Damage block from Stout Shield / Vanguard / etc (approximate for creeps)
-			// Lane creeps have small innate block, siege creeps have more
-			const name = target.Name?.toLowerCase() || ""
-			const damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
+			const landTime = now + turnTime + attackPoint + travelTime
+			const attackDamage = enemy.GetAttackDamage(creep)
 
-			// Apply armor multiplier
-			let actualDamage = rawDamage * armorMultiplier
-
-			// Apply damage block (only for physical attacks)
-			actualDamage = Math.max(1, actualDamage - damageBlock)
-
-			return actualDamage
+			if (!best || landTime < best.landTime) {
+				best = { landTime, attackDamage, hero: enemy }
+			}
 		}
 
-		// 1. Account for in-flight projectiles
+		return best
+	}
+
+	/**
+	 * Predict the creep's HP at the given landTime by simulating:
+	 * 1. In-flight tracking projectiles
+	 * 2. Future attacks from units (creeps, heroes) currently targeting the creep
+	 * 3. Tower attacks (separate entity, multi-attack projection)
+	 */
+	private predictCreepHealth(hero: Hero, creep: Creep, landTime: number): number {
+		const now = GameState.RawServerTime
+		let predictedHP = creep.HP
+
+		// Natural HP regeneration during the prediction window
+		if (landTime > now) {
+			predictedHP += (creep.HPRegen || 0) * (landTime - now)
+		}
+
+		// 1. Simulate all in-flight projectiles targeting this creep
 		const projectiles = ProjectileManager.AllTrackingProjectiles
 		for (const proj of projectiles) {
-			if (!proj.IsValid || proj.IsDodged || !proj.Target || proj.Target.Index !== creep.Index) {
+			if (
+				!proj.IsValid ||
+				proj.IsDodged ||
+				!proj.Target ||
+				proj.Target.Index !== creep.Index
+			) {
 				continue
 			}
 			const source = proj.Source
-			if (!source || source.Index === hero.Index) {
+			if (
+				!source ||
+				!(source instanceof Unit) ||
+				!source.IsValid ||
+				source.Index === hero.Index
+			) {
 				continue
 			}
+
 			const dist = creep.Distance2D(proj.Position)
 			const speed = proj.Speed > 0 ? proj.Speed : 1000
 			const timeToImpact = dist / speed
-			const projLandTime = currentTime + timeToImpact
+			const projLandTime = now + timeToImpact
 
 			if (projLandTime <= landTime) {
-				if (source instanceof Unit && source.IsValid) {
-					const rawDamage = source.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
-					const actualDamage = calculateActualDamage(source, creep, rawDamage)
-					predictedHP -= actualDamage
+				const damage = source.GetAttackDamage(creep)
+				predictedHP -= damage
+				// Creep dies before our attack lands — stop simulating
+				if (predictedHP <= 0) {
+					return 0
 				}
 			}
 		}
 
-		// 2. Account for future attacks from units & towers targeting the creep
+		// 2. Simulate future attacks from units (creeps, heroes) targeting this creep
 		const allUnits = EntityManager.GetEntitiesByClass(Unit)
 		for (const unit of allUnits) {
-			// Skip invalid, dead, invisible units and our hero
-			if (!unit.IsValid || !unit.IsAlive || !unit.IsVisible || unit.Index === hero.Index || unit.IsDisarmed) {
-				continue
-			}
-			if (!unit.IsEnemy(creep)) {
-				continue
-			}
-
-			// Only track attacks from units targeting this creep
-			const targetIndex = this.unitTargets.get(unit.Index)
-			const isCurrentlyTargeting =
-				(unit.Target && unit.Target.Index === creep.Index) || targetIndex === creep.Index
-			if (!isCurrentlyTargeting) {
+			if (
+				!unit.IsValid ||
+				!unit.IsAlive ||
+				!unit.IsVisible ||
+				unit.Index === hero.Index ||
+				unit.IsDisarmed ||
+				!unit.IsEnemy(creep)
+			) {
 				continue
 			}
 
-			// Ensure unit is within attack range (towers have much larger range)
-			const maxRange = unit.IsTower ? unit.GetAttackRange(creep) + 100 : unit.GetAttackRange(creep) + 150
-			if (unit.Distance2D(creep) > maxRange) {
+			// Only consider units currently targeting this creep
+			const currentTarget = unit.Target
+			if (!currentTarget || currentTarget.Index !== creep.Index) {
 				continue
 			}
 
-			// Project when the next attack will fire
-			let nextFireTime = 0
-			const isInAnimation = unit.IsInAnimation && unit.LastAnimationIsAttack && !unit.LastAnimationCasted
+			// Check if unit is in range to attack this creep
+			const attackRange = unit.GetAttackRange(creep)
+			if (unit.Distance2D(creep) > attackRange + 50) {
+				continue
+			}
 
-			if (isInAnimation) {
-				const remainingTime = unit.LastAnimationStartTime + unit.LastAnimationCastPoint - GameState.RawGameTime
-				nextFireTime = currentTime + Math.max(0, remainingTime)
+			// Determine when the unit's next attack will fire
+			let nextFireTime: number
+			if (
+				unit.IsInAnimation &&
+				unit.LastAnimationIsAttack &&
+				!unit.LastAnimationCasted
+			) {
+				const remaining =
+					unit.LastAnimationStartTime + unit.LastAnimationCastPoint - now
+				nextFireTime = now + Math.max(0, remaining)
 			} else {
-				nextFireTime = Math.max(
+				const attackCooldown = Math.max(
 					unit.AttackTimeAtLastTick + unit.SecondsPerAttack,
-					currentTime + unit.GetNextAttackPoint(0)
+					now + unit.GetNextAttackPoint(0)
 				)
+				nextFireTime = attackCooldown
 			}
 
-			// Project when the attack will land
-			const travelTime = unit.IsRanged
-				? unit.Distance2D(creep) / (unit.AttackProjectileSpeed > 0 ? unit.AttackProjectileSpeed : 1000)
+			const unitTravelTime = unit.IsRanged
+				? unit.Distance2D(creep) /
+					(unit.AttackProjectileSpeed > 0 ? unit.AttackProjectileSpeed : 1000)
 				: 0
 
-			let currentUnitLandTime = nextFireTime + travelTime
-			// Towers attack faster than creeps (usually 1.0 BAT for towers vs 1.5-1.7 for creeps)
-			const secondsPerAttack = Math.max(
-				unit.IsTower ? 0.8 : 0.1,
-				unit.SecondsPerAttack > 0 ? unit.SecondsPerAttack : 1.5
-			)
+			// Only project the next single attack — multi-attack projection
+			// over-estimates damage and causes false negatives
+			const currentLandTime = nextFireTime + unitTravelTime
+			if (currentLandTime <= landTime) {
+				const damage = unit.GetAttackDamage(creep)
+				predictedHP -= damage
+				if (predictedHP <= 0) {
+					return 0
+				}
+			}
+		}
 
-			while (currentUnitLandTime <= landTime) {
-				const rawDamage = unit.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
-				const actualDamage = calculateActualDamage(unit, creep, rawDamage)
-				predictedHP -= actualDamage
-				currentUnitLandTime += secondsPerAttack
+		// 3. Simulate tower attacks (Tower is a separate entity class from Unit)
+		// Towers are very predictable, so we can safely project multiple attacks
+		const towers = EntityManager.GetEntitiesByClass(Tower)
+		for (const tower of towers) {
+			if (!tower.IsValid || !tower.IsAlive || !tower.IsVisible || !tower.IsEnemy(creep)) {
+				continue
+			}
+
+			const currentTarget = tower.Target
+			if (!currentTarget || currentTarget.Index !== creep.Index) {
+				continue
+			}
+
+			const towerAttackRange = tower.GetAttackRange(creep)
+			if (tower.Distance2D(creep) > towerAttackRange + 50) {
+				continue
+			}
+
+			let nextFireTime: number
+			if (
+				tower.IsInAnimation &&
+				tower.LastAnimationIsAttack &&
+				!tower.LastAnimationCasted
+			) {
+				const remaining =
+					tower.LastAnimationStartTime + tower.LastAnimationCastPoint - now
+				nextFireTime = now + Math.max(0, remaining)
+			} else {
+				const attackCooldown = Math.max(
+					tower.AttackTimeAtLastTick + tower.SecondsPerAttack,
+					now + tower.GetNextAttackPoint(0)
+				)
+				nextFireTime = attackCooldown
+			}
+
+			const towerTravelTime = tower.IsRanged
+				? tower.Distance2D(creep) /
+					(tower.AttackProjectileSpeed > 0 ? tower.AttackProjectileSpeed : 1000)
+				: 0
+
+			const secondsPerAttack = Math.max(0.5, tower.SecondsPerAttack || 1.0)
+
+			// Project multiple tower attacks — towers are predictable and hit hard,
+			// so we need the full sequence to time our last hit correctly
+			let currentLandTime = nextFireTime + towerTravelTime
+			while (currentLandTime <= landTime) {
+				const damage = tower.GetAttackDamage(creep)
+				predictedHP -= damage
+				if (predictedHP <= 0) {
+					return 0
+				}
+				currentLandTime += secondsPerAttack
 			}
 		}
 
 		return Math.max(0, predictedHP)
 	}
 
+	/**
+	 * Sums ALL incoming attack damage currently heading toward this creep from
+	 * towers AND allied creeps that are actively targeting it. Used for pre-hit
+	 * adjustment to account for combined creep + tower damage.
+	 */
+	private getCurrentIncomingDamage(hero: Hero, creep: Creep): number {
+		let total = 0
+
+		// Tower damage
+		const towers = EntityManager.GetEntitiesByClass(Tower)
+		for (const tower of towers) {
+			if (!tower.IsValid || !tower.IsAlive || !tower.IsVisible || !tower.IsEnemy(creep)) {
+				continue
+			}
+			const target = tower.Target
+			if (target && target.Index === creep.Index) {
+				total += tower.GetAttackDamage(creep)
+			}
+		}
+
+		// Allied units (creeps) currently targeting this creep
+		const allUnits = EntityManager.GetEntitiesByClass(Unit)
+		for (const unit of allUnits) {
+			if (
+				!unit.IsValid ||
+				!unit.IsAlive ||
+				!unit.IsVisible ||
+				unit.Index === hero.Index ||
+				unit.IsDisarmed ||
+				!unit.IsEnemy(creep)
+			) {
+				continue
+			}
+			const currentTarget = unit.Target
+			if (currentTarget && currentTarget.Index === creep.Index) {
+				const attackRange = unit.GetAttackRange(creep)
+				if (unit.Distance2D(creep) <= attackRange + 50) {
+					total += unit.GetAttackDamage(creep)
+				}
+			}
+		}
+
+		return total
+	}
+
 	private updateAttackRangeDraw(hero: Hero): void {
 		const isKeyPressed = this.lastHitKey.isPressed || this.spellsKey.isPressed
-		if (this.showAttackRange.value && isKeyPressed && hero && hero.IsValid && hero.IsAlive) {
+		if (this.showAttackRange.value && isKeyPressed && hero.IsValid && hero.IsAlive) {
 			const attackRange = hero.GetAttackRange(undefined, 0, false)
 			this.pSDK.DrawCircle("hero_attack_range", hero, attackRange, {
 				Color: Color.Green,
@@ -247,8 +392,46 @@ class CustomLastHit {
 		}
 	}
 
+	/**
+	 * Check if there's another creep that's about to be killable in the next
+	 * ~0.5 seconds. If so, we should NOT pre-hit — save our attack for the real kill.
+	 */
+	private hasCreepNearKillRange(
+		hero: Hero,
+		creeps: Creep[],
+		skipCreep: Creep,
+		attackRange: number,
+		effectiveRange: number
+	): boolean {
+		const now = GameState.RawServerTime
+		for (const c of creeps) {
+			if (c.Index === skipCreep.Index || !c.IsEnemy(hero)) {
+				continue
+			}
+			const dist = hero.Distance2D(c)
+			if (dist > effectiveRange + 200) {
+				continue
+			}
+			const landTime = this.getHeroAttackLandTime(hero, c)
+			if (landTime > now + 0.5) {
+				continue
+			}
+			const predicted = this.predictCreepHealth(hero, c, landTime)
+			const dmg = hero.GetAttackDamage(c) * 0.92
+			if (predicted > 0 && predicted <= dmg) {
+				return true
+			}
+		}
+		return false
+	}
+
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || ExecuteOrder.DisableHumanizer) {
+			return
+		}
+
+		if (!this.enabled.value) {
+			this.pSDK.DestroyByKey("hero_attack_range")
 			return
 		}
 
@@ -262,10 +445,6 @@ class CustomLastHit {
 			return
 		}
 
-		// Update targeting map for all units
-		this.updateUnitTargets()
-
-		// Draw/update attack range display
 		this.updateAttackRangeDraw(hero)
 
 		const isLastHitKeyPressed = this.lastHitKey.isPressed
@@ -279,206 +458,360 @@ class CustomLastHit {
 			return
 		}
 
-		if (hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed || hero.IsInvisible) {
+		// Don't issue a new order if we're mid-attack-animation and
+		// still targeting the same creep — prevents self-canceling
+		if (
+			hero.IsInAnimation &&
+			hero.LastAnimationIsAttack &&
+			!hero.LastAnimationCasted &&
+			lastAttackTargetIdx >= 0 &&
+			hero.Target &&
+			hero.Target.Index === lastAttackTargetIdx
+		) {
 			return
 		}
 
-		const creeps = EntityManager.GetEntitiesByClass(Creep).filter(c => {
-			return c.IsValid && c.IsAlive && c.IsVisible && hero.Distance2D(c) <= hero.GetAttackRange(c) + 300
-		})
+		// If we just issued an attack order, let the projectile land before re-evaluating.
+		// The sleeper alone isn't enough because animation resets on move/cancel.
+		if (
+			lastAttackOrderTime > 0 &&
+			GameState.RawServerTime * 1000 - lastAttackOrderTime <
+			hero.GetNextAttackPoint(GameState.InputLag) * 1000 + 30
+		) {
+			return
+		}
 
-		const usableSpells = hero.Spells.filter((s): s is Ability => {
-			if (!s || !s.IsValid || s.IsHidden || s.IsItem || s.Level === 0) {
-				return false
+		if (
+			hero.IsChanneling ||
+			hero.IsStunned ||
+			hero.IsSilenced ||
+			hero.IsHexed ||
+			hero.IsInvisible
+		) {
+			return
+		}
+
+		const heroAttackRange = hero.GetAttackRange(undefined, 0, false)
+		const searchRadius = heroAttackRange + 300
+
+		const creeps = EntityManager.GetEntitiesByClass(Creep).filter(
+			c => c.IsValid && c.IsAlive && c.IsVisible && hero.Distance2D(c) <= searchRadius
+		)
+
+		// --- Last hit / Deny with attacks (only when lastHitKey is pressed) ---
+		if (isLastHitKeyPressed) {
+			interface ScoreEntry {
+				creep: Creep
+				margin: number
+				isDeny: boolean
+				isPrepHit: boolean
 			}
-			if (s.IsPassive) {
-				return false
-			}
-			if (s.AbilitySlot !== undefined && s.AbilitySlot > 2) {
-				return false
-			}
-			return s.Cooldown <= 0.1 && hero.Mana >= s.ManaCost
-		})
+			const candidates: ScoreEntry[] = []
 
-		let bestLastHitCreep: Creep | undefined
-		let bestDenyCreep: Creep | undefined
-		let bestSpellLastHitCreep: Creep | undefined
-		let bestSpell: Ability | undefined
+			const canAttack = hero.CanAttack()
 
-		for (const creep of creeps) {
-			const turnTime = hero.TurnTimeNew(creep.Position, false)
-			const attackPoint = hero.GetNextAttackPoint(GameState.InputLag)
+			if (canAttack) {
+				for (const creep of creeps) {
+					const creepDist = hero.Distance2D(creep)
+					const effectiveRange = heroAttackRange + hero.HullRadius + creep.HullRadius + 50
 
-			// Calculate when our attack will land
-			const landTime = GameState.RawServerTime + GameState.InputLag + turnTime + attackPoint
+					const landTime = this.getHeroAttackLandTime(hero, creep)
+					const predictedHP = this.predictCreepHealth(hero, creep, landTime)
+					const attackDamage = hero.GetAttackDamage(creep)
+					const safeDamage = attackDamage * 0.92
 
-			// Predict creep HP at land time using our helper (which accounts for armor/block from other units)
-			const predictedHP = this.predictCreepHealth(hero, creep, landTime)
+					// Enemy race detection — conservative: use 85% of enemy damage
+					const enemyHit = this.getFastestEnemyLastHit(hero, creep)
+					const enemyWinsRace =
+						enemyHit !== null &&
+						enemyHit.landTime < landTime &&
+						predictedHP > 0 &&
+						predictedHP <= enemyHit.attackDamage * 0.85
 
-			// Calculate our actual attack damage after armor reduction and damage block
-			const rawAttackDamage = hero.GetAttackDamage(creep, ATTACK_DAMAGE_STRENGTH.DAMAGE_AVG)
+					// Enemy creep — last hit
+					if (creep.IsEnemy(hero)) {
+						// Main prediction — use safeDamage to account for damage roll variance
+						if (predictedHP > 0 && predictedHP <= safeDamage && !enemyWinsRace) {
+							candidates.push({
+								creep,
+								margin: attackDamage - predictedHP + (creepDist > effectiveRange ? 500 : 0),
+								isDeny: false,
+								isPrepHit: false
+							})
+						}
+						// We're slightly too slow, but pre-hitting now spoils the enemy's last hit
+						// and sets HP for our next attack
+						else if (
+							enemyWinsRace &&
+							creepDist <= effectiveRange &&
+							enemyHit !== null // TypeScript narrowing
+						) {
+							const afterOurHit = creep.HP - attackDamage
+							const enemyLandHP = afterOurHit - enemyHit.attackDamage
+							// After our pre-hit + enemy hit, HP must still be >0 AND killable by us
+							if (afterOurHit > 0 && enemyLandHP > 0 && enemyLandHP <= safeDamage) {
+								candidates.push({
+									creep,
+									margin: 1500 + (attackDamage - enemyLandHP),
+									isDeny: false,
+									isPrepHit: true
+								})
+							}
+						}
+						// Safety net: over-prediction fallback
+						else if (predictedHP <= 0 && creep.HP > 0 && creep.HP <= safeDamage && !enemyWinsRace) {
+							candidates.push({
+								creep,
+								margin: attackDamage - creep.HP + (creepDist > effectiveRange ? 500 : 0),
+								isDeny: false,
+								isPrepHit: false
+							})
+						}
+						// Pre-hit setup: must be in range, otherwise hero stutters with follow cursor.
+						// Hit early to bring creep HP into killable range for our next attack.
+						// Only pre-hit when the creep is barely above kill threshold (≤20% over),
+						// to avoid wasting attack cooldown on non-urgent creeps.
+						else if (creepDist <= effectiveRange && predictedHP > safeDamage && predictedHP <= safeDamage * 1.2) {
+							const afterOurHit = creep.HP - attackDamage
+							const incomingDamage = this.getCurrentIncomingDamage(hero, creep)
+							const afterPreHitPlusWave = afterOurHit - incomingDamage
 
-			// Apply armor reduction and damage block for OUR attack on this creep
-			const targetArmor = creep.Armor || 0
-			const armorReduction = (targetArmor * 0.06) / (1 + targetArmor * 0.06)
-			let damageBlock = 0
-			const name = creep.Name?.toLowerCase() || ""
-			damageBlock = name.includes("siege") || name.includes("ranged") ? 2 : 1
-			const attackDamage = Math.max(1, rawAttackDamage * (1 - armorReduction) - damageBlock)
-
-			if (creep.IsEnemy(hero)) {
-				if (predictedHP <= attackDamage && predictedHP > 0) {
-					if (!bestLastHitCreep || creep.HP < bestLastHitCreep.HP) {
-						bestLastHitCreep = creep
-					}
-				} else if (this.spellsEnabled.value || isSpellsKeyPressed) {
-					for (const spell of usableSpells) {
-						const spellLandTime =
-							GameState.RawServerTime +
-							GameState.InputLag +
-							hero.TurnTimeNew(creep.Position, false) +
-							spell.CastPoint
-						const predictedSpellHP = this.predictCreepHealth(hero, creep, spellLandTime)
-						const spellDamage = spell.GetDamage(creep)
-						if (predictedSpellHP <= spellDamage && predictedSpellHP > 0) {
-							if (!bestSpellLastHitCreep || creep.HP < bestSpellLastHitCreep.HP) {
-								bestSpellLastHitCreep = creep
-								bestSpell = spell
+							// Case A: Pre-hit + incoming damage wave sets HP into kill range
+							if (incomingDamage > 0 && afterPreHitPlusWave > 0 && afterPreHitPlusWave <= safeDamage) {
+								candidates.push({
+									creep,
+									margin: 1000 + (attackDamage - afterPreHitPlusWave) + (enemyWinsRace ? 500 : 0),
+									isDeny: false,
+									isPrepHit: true
+								})
+							}
+							// Case B: No wave, but our hit alone brings it into kill range on next attack.
+							// Only trigger if there's NO other creep that will be killable very soon
+							// (to avoid wasting attack cooldown and missing a real last hit).
+							else if (afterOurHit > 0 && afterOurHit <= safeDamage && !this.hasCreepNearKillRange(hero, creeps, creep, heroAttackRange, effectiveRange)) {
+								candidates.push({
+									creep,
+									margin: 2500 + (attackDamage - afterOurHit) * 0.5,
+									isDeny: false,
+									isPrepHit: true
+								})
 							}
 						}
 					}
-				}
-			} else if (this.denyEnabled.value && creep.HP / creep.MaxHP < 0.5) {
-				if (predictedHP <= attackDamage && predictedHP > 0) {
-					if (!bestDenyCreep || creep.HP < bestDenyCreep.HP) {
-						bestDenyCreep = creep
+					// Friendly creep — deny
+					else if (
+						this.denyEnabled.value &&
+						creep.IsDeniable &&
+						creep.HP / creep.MaxHP < 0.5
+					) {
+						if (predictedHP > 0 && predictedHP <= safeDamage) {
+							candidates.push({
+								creep,
+								margin: attackDamage - predictedHP + (creepDist > effectiveRange ? 500 : 0),
+								isDeny: true,
+								isPrepHit: false
+							})
+						} else if (predictedHP <= 0 && creep.HP > 0 && creep.HP <= safeDamage) {
+							candidates.push({
+								creep,
+								margin: attackDamage - creep.HP + (creepDist > effectiveRange ? 500 : 0),
+								isDeny: true,
+								isPrepHit: false
+							})
+						}
 					}
 				}
 			}
-		}
 
-		const canAttack = !hero.IsDisarmed && hero.CanAttack()
-		if (this.prioritySetting.SelectedID === 0) {
-			if (bestLastHitCreep && canAttack) {
+			if (candidates.length > 0) {
+				// Sort by priority then by margin
+				// Priority 0 = Last Hit first, 1 = Deny first
+				const prioritizeDeny = this.prioritySetting.SelectedID === 1
+
+				candidates.sort((a, b) => {
+					// Primary sort: real last hits before prep hits
+					if (a.isPrepHit !== b.isPrepHit) {
+						return a.isPrepHit ? 1 : -1
+					}
+					// Secondary sort: by priority (deny preference)
+					if (a.isDeny !== b.isDeny && !a.isPrepHit) {
+						return prioritizeDeny
+							? a.isDeny
+								? -1
+								: 1
+							: a.isDeny
+								? 1
+								: -1
+					}
+					// Tertiary sort: by margin (smaller = more urgent)
+					return a.margin - b.margin
+				})
+
+				const best = candidates[0]
 				ExecuteOrder.PrepareOrder({
 					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
 					issuers: [hero],
-					target: bestLastHitCreep.Index,
+					target: best.creep.Index,
 					queue: false,
 					showEffects: true,
 					isPlayerInput: false
 				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
-			}
-			if (bestDenyCreep && canAttack) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-					issuers: [hero],
-					target: bestDenyCreep.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
-			}
-		} else {
-			if (bestDenyCreep && canAttack) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-					issuers: [hero],
-					target: bestDenyCreep.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
-			}
-			if (bestLastHitCreep && canAttack) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-					issuers: [hero],
-					target: bestLastHitCreep.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
+				lastAttackTargetIdx = best.creep.Index
+				lastAttackOrderTime = GameState.RawServerTime * 1000
+				lastHitSleeper.Sleep(sleepTime(hero))
 				return
 			}
 		}
 
-		if (bestSpellLastHitCreep && bestSpell) {
-			const isTarget = bestSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
-			const isPosition = bestSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
-			const isNoTarget = bestSpell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
+		// --- Spell last hit (when spellsKey is pressed or toggle is on) ---
+		if ((isSpellsKeyPressed || this.spellsEnabled.value) && !hero.IsSilenced) {
+			const usableSpells = hero.Spells.filter((s): s is Ability => {
+				if (!s || !s.IsValid || s.IsHidden || s.IsItem || !s.CanBeCasted()) {
+					return false
+				}
+				if (s.IsPassive) {
+					return false
+				}
+				// Exclude ultimate (slot 3), exclude slot 4+ (bonus abilities)
+				if (s.AbilitySlot !== undefined && (s.AbilitySlot === 3 || s.AbilitySlot > 3)) {
+					return false
+				}
+				return true
+			})
 
-			if (isNoTarget) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-					issuers: [hero],
-					ability: bestSpell.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + bestSpell.CastPoint * 1000 + 100)
-				return
-			} else if (isPosition) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-					issuers: [hero],
-					position: bestSpellLastHitCreep.Position,
-					ability: bestSpell.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + bestSpell.CastPoint * 1000 + 100)
-				return
-			} else if (isTarget) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-					issuers: [hero],
-					target: bestSpellLastHitCreep.Index,
-					ability: bestSpell.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + bestSpell.CastPoint * 1000 + 100)
+			let bestSpellCombo:
+				| { creep: Creep; spell: Ability; margin: number }
+				| undefined
+
+			for (const creep of creeps) {
+				if (!creep.IsEnemy(hero)) {
+					continue
+				}
+				for (const spell of usableSpells) {
+					// Skip spells that are out of range
+					const castRange = spell.CastRange
+					if (castRange > 0 && hero.Distance2D(creep) > castRange) {
+						continue
+					}
+
+					const spellLandTime =
+						GameState.RawServerTime +
+						GameState.InputLag +
+						hero.TurnTimeNew(creep.Position, false) +
+						spell.CastPoint
+
+					const predictedSpellHP = this.predictCreepHealth(hero, creep, spellLandTime)
+					const spellDamage = spell.GetDamage(creep)
+					const safeSpellDamage = spellDamage * 0.92
+
+					if (predictedSpellHP > 0 && predictedSpellHP <= safeSpellDamage) {
+						const margin = spellDamage - predictedSpellHP
+						if (!bestSpellCombo || margin < bestSpellCombo.margin) {
+							bestSpellCombo = { creep, spell, margin }
+						}
+					}
+					// Safety net: over-prediction fallback
+					else if (predictedSpellHP <= 0 && creep.HP > 0 && creep.HP <= safeSpellDamage) {
+						const margin = spellDamage - creep.HP
+						if (!bestSpellCombo || margin < bestSpellCombo.margin) {
+							bestSpellCombo = { creep, spell, margin }
+						}
+					}
+				}
+			}
+
+			if (bestSpellCombo) {
+				const { creep, spell } = bestSpellCombo
+
+				if (
+					spell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
+				) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+						issuers: [hero],
+						ability: spell.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				} else if (
+					spell.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
+				) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: creep.Position,
+						ability: spell.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				} else if (
+					spell.HasBehavior(
+						DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET
+					)
+				) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: creep.Index,
+						ability: spell.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				}
+				lastAttackTargetIdx = best.creep.Index
+				lastAttackOrderTime = GameState.RawServerTime * 1000
+				lastHitSleeper.Sleep(sleepTime(hero) + spell.CastPoint * 1000)
 				return
 			}
 		}
 
-		if (this.harassEnabled.value && !hero.IsDisarmed && hero.CanAttack()) {
-			const inEnemyTowerRange = EntityManager.GetEntitiesByClass(Tower).some(t => {
-				return (
+		// --- Harass (only when lastHitKey pressed and no last hit / deny / spell target found) ---
+		if (
+			isLastHitKeyPressed &&
+			this.harassEnabled.value &&
+			!hero.IsDisarmed &&
+			hero.CanAttack()
+		) {
+			const inEnemyTowerRange = EntityManager.GetEntitiesByClass(Tower).some(
+				t =>
 					t.IsValid &&
 					t.IsAlive &&
 					t.IsEnemy(hero) &&
 					hero.Position.Distance2D(t.Position) <= t.GetAttackRange(hero)
-				)
-			})
+			)
 
-			const nearEnemyCreeps = EntityManager.GetEntitiesByClass(Creep).some(c => {
-				return c.IsValid && c.IsAlive && c.IsEnemy(hero) && hero.Position.Distance2D(c.Position) <= 500
-			})
+			const nearEnemyCreeps = EntityManager.GetEntitiesByClass(Creep).some(
+				c =>
+					c.IsValid &&
+					c.IsAlive &&
+					c.IsEnemy(hero) &&
+					hero.Position.Distance2D(c.Position) <= 500
+			)
 
-			const safeToHarass = this.aggressiveHarass.value || (!inEnemyTowerRange && !nearEnemyCreeps)
+			const safeToHarass =
+				this.aggressiveHarass.value || (!inEnemyTowerRange && !nearEnemyCreeps)
 
 			if (safeToHarass) {
 				let bestHarassTarget: Hero | undefined
 				let minDist = Infinity
-				const searchRadius = this.harassSearchRadius.value
 
 				const heroes = EntityManager.GetEntitiesByClass(Hero)
 				for (const enemy of heroes) {
-					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+					if (
+						enemy.IsValid &&
+						enemy.IsAlive &&
+						enemy.IsVisible &&
+						enemy.IsEnemy(hero) &&
+						!enemy.IsIllusion
+					) {
 						const dist = hero.Distance2D(enemy)
-						if (dist <= searchRadius && dist < minDist) {
+						if (
+							dist <= this.harassSearchRadius.value &&
+							dist < minDist
+						) {
 							minDist = dist
 							bestHarassTarget = enemy
 						}
@@ -494,13 +827,16 @@ class CustomLastHit {
 						showEffects: true,
 						isPlayerInput: false
 					})
-					lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
+					lastAttackTargetIdx = bestHarassTarget.Index
+					lastAttackOrderTime = GameState.RawServerTime * 1000
+					lastHitSleeper.Sleep(sleepTime(hero))
 					return
 				}
 			}
 		}
 
-		if (this.followCursor.value) {
+		// --- Follow cursor (only when lastHitKey pressed and idle) ---
+		if (isLastHitKeyPressed && this.followCursor.value) {
 			const mousePos = InputManager.CursorOnWorld
 			if (mousePos && mousePos.IsValid) {
 				ExecuteOrder.PrepareOrder({
@@ -511,7 +847,7 @@ class CustomLastHit {
 					showEffects: false,
 					isPlayerInput: false
 				})
-				lastHitSleeper.Sleep(GameState.InputLag * 1000 + 100)
+				lastHitSleeper.Sleep(sleepTime(hero))
 			}
 		}
 	}

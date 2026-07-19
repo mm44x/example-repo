@@ -1,17 +1,20 @@
 import {
 	Attributes,
+	Color,
 	DOTAGameState,
 	EventsSDK,
 	GameRules,
-	GameState,
 	Menu,
-	UnitData
+	RendererSDK,
+	UnitData,
+	Vector2
 } from "github.com/octarine-public/wrapper/index"
 
 new (class AutoBanUtility {
 	private readonly entry = Menu.AddEntry("mm44x")
-	private readonly tree = this.entry.AddNode("Auto Ban Heroes", "menu/icons/juggernaut.svg")
+	private readonly tree = this.entry.AddNode("Auto Ban Heroes")
 	private readonly enabled = this.tree.AddToggle("Enabled", false)
+	private readonly debugToggle = this.tree.AddToggle("Debug Draw", false, "", 10)
 
 	private readonly strengthNode = this.tree.AddNode("Strength Heroes")
 	private readonly agilityNode = this.tree.AddNode("Agility Heroes")
@@ -26,18 +29,64 @@ new (class AutoBanUtility {
 	private populated = false
 	private lastUpdateTime = 0
 
+	private debugLines: string[] = []
+	private debugLastBanResult = ""
+
 	constructor() {
 		EventsSDK.on("UnitAbilityDataUpdated", this.populateAndRefresh.bind(this))
 		EventsSDK.on("ServerInfo", this.populateAndRefresh.bind(this))
 		EventsSDK.on("GameStateChanged", this.onGameStateChanged.bind(this))
 		EventsSDK.on("PostDataUpdate", this.onPostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("Draw", this.onDraw.bind(this))
 
 		this.enabled.OnValue(() => {
 			this.updateBans()
 		})
 
 		this.populateAndRefresh()
+	}
+
+	private onDraw(): void {
+		if (!this.debugToggle.value || this.debugLines.length === 0) {
+			return
+		}
+		const padX = 8
+		const padY = 6
+
+		let maxW = 0
+		const totalLines = this.debugLines.length + (this.debugLastBanResult ? 1 : 0)
+		const allText = [...this.debugLines]
+		if (this.debugLastBanResult) {
+			allText.push(this.debugLastBanResult)
+		}
+
+		for (const line of allText) {
+			const sz = RendererSDK.GetTextSize(line, RendererSDK.DefaultFontName, RendererSDK.DefaultTextSize)
+			if (sz.x > maxW) {
+				maxW = sz.x
+			}
+		}
+
+		const textH = RendererSDK.DefaultTextSize
+		const x = 50, y = 300
+		const rectW = maxW + padX * 2
+		const rectH = totalLines * textH + padY * 2
+
+		RendererSDK.FilledRect(
+			new Vector2(x - padX, y - padY),
+			new Vector2(rectW, rectH),
+			new Color(0, 0, 0, 255)
+		)
+
+		let ly = y
+		for (const line of this.debugLines) {
+			RendererSDK.Text(line, new Vector2(x, ly), Color.White)
+			ly += textH
+		}
+		if (this.debugLastBanResult) {
+			RendererSDK.Text(this.debugLastBanResult, new Vector2(x, ly), Color.Yellow)
+		}
 	}
 
 	private isSelectionState(state: DOTAGameState): boolean {
@@ -50,7 +99,6 @@ new (class AutoBanUtility {
 	}
 
 	private onGameStateChanged(state: DOTAGameState): void {
-		console.log(`[AutoBan] GameStateChanged: ${state}`)
 		if (this.isSelectionState(state)) {
 			this.updateBans()
 		}
@@ -141,16 +189,26 @@ new (class AutoBanUtility {
 	}
 
 	private updateBans(): void {
-		const isDedicated = GameState.IsDedicatedServer
-		const gameState = GameRules?.GameState
-		const gameMode = GameRules?.GameMode
-		const isBanPhase = GameRules?.IsBanPhase
+		const gameRules = GameRules
+		const gameState = gameRules?.GameState
+		const gameMode = gameRules?.GameMode
+		const isBanPhase = gameRules?.IsBanPhase
+
+		this.debugLines = [
+			`[AutoBan] enabled=${this.enabled.value}`,
+			`  gameState=${gameState} (2=HERO_SEL, 9=CUSTOM_SETUP, 12=PLAYER_DRAFT)`,
+			`  gameMode=${gameMode} (15=CUSTOM, 23=TURBO)`,
+			`  IsBanPhase=${isBanPhase}`,
+			`  AllDraftPhase=${gameRules?.AllDraftPhase}`
+		]
 
 		if (!this.enabled.value) {
-			console.log(
-				`[AutoBan] Disabled. isDedicated=${isDedicated}, gameState=${gameState}, gameMode=${gameMode}, isBanPhase=${isBanPhase}`
-			)
 			ToggleBanHeroes(false)
+			this.debugLastBanResult = "DISABLED - ToggleBanHeroes(false)"
+			return
+		}
+		if (!(isBanPhase ?? false)) {
+			this.debugLastBanResult = "SKIP - not ban phase"
 			return
 		}
 
@@ -175,16 +233,12 @@ new (class AutoBanUtility {
 		addSelectedHeroIds(this.intellectSelector)
 		addSelectedHeroIds(this.universalSelector)
 
-		console.log(
-			`[AutoBan] updateBans: isDedicated=${isDedicated}, gameState=${gameState}, gameMode=${gameMode}, isBanPhase=${isBanPhase}, bannedHeroIds=[${bannedHeroIds.join(
-				", "
-			)}]`
-		)
-
 		if (bannedHeroIds.length > 0) {
 			ToggleBanHeroes(bannedHeroIds)
+			this.debugLastBanResult = `BANNED: [${bannedHeroIds.join(", ")}]`
 		} else {
 			ToggleBanHeroes(false)
+			this.debugLastBanResult = "NO SELECTION - ToggleBanHeroes(false)"
 		}
 	}
 })()

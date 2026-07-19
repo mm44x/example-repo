@@ -7,6 +7,8 @@ import "./auto_save"
 import "./visage_combo"
 import "./tusk_combo"
 import "./magnus_combo"
+import "./invoker_combo"
+
 
 import {
 	Attributes,
