@@ -8,6 +8,7 @@ import "./visage_combo"
 import "./tusk_combo"
 import "./magnus_combo"
 import "./invoker_combo"
+import "./tinker_combo"
 
 
 import {
