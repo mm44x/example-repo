@@ -540,13 +540,11 @@ new (class TinkerCombo {
 		if (!bestTarget) return
 
 		const distToTarget = hero.Distance2D(bestTarget)
-		if (hero.IsChanneling) return
+		if (hero.IsChanneling || this.sleeper.Sleeping) return
 
 		if (distToTarget > 800) {
 			if (this.doBlink(hero, bestTarget.Position)) return
 		}
-
-		if (this.sleeper.Sleeping) return
 
 		const isImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
