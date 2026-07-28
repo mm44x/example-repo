@@ -1,0 +1,4 @@
+C:\Users\Bedjo\github.com\mm44x\example-repo\INSTRUCTIONS.md
+C:\Users\Bedjo\github.com\mm44x\example-repo\README.md
+C:\Users\Bedjo\github.com\mm44x\example-repo\scripts_reference\last_hit_marker.md
+C:\Users\Bedjo\github.com\mm44x\example-repo\scripts_reference\snatcher.md

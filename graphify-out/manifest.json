@@ -1,0 +1,127 @@
+{
+  ".eslintrc.json": {
+    "mtime": 1780555047.1974835,
+    "ast_hash": "35f16165c032e4f73cc374b76ea04932",
+    "semantic_hash": "35f16165c032e4f73cc374b76ea04932"
+  },
+  ".vscode/extensions.json": {
+    "mtime": 1780555047.2014937,
+    "ast_hash": "b5540e369c03167a15caf77fff1c2eb6",
+    "semantic_hash": "b5540e369c03167a15caf77fff1c2eb6"
+  },
+  ".vscode/settings.json": {
+    "mtime": 1780555047.2014937,
+    "ast_hash": "f7e96019770a1361dbb844de45cf41ba",
+    "semantic_hash": "f7e96019770a1361dbb844de45cf41ba"
+  },
+  ".vscode/tasks.json": {
+    "mtime": 1780555047.202526,
+    "ast_hash": "f4663ef789227553e5c41f23a716ccee",
+    "semantic_hash": "f4663ef789227553e5c41f23a716ccee"
+  },
+  "anti_initiation.ts": {
+    "mtime": 1782408775.5841677,
+    "ast_hash": "5356260743afd3ab007f0941446241f2",
+    "semantic_hash": "5356260743afd3ab007f0941446241f2"
+  },
+  "armlet_abuse.ts": {
+    "mtime": 1781110261.7172325,
+    "ast_hash": "a7d3a2d65a8b762734156e9fdf815b4d",
+    "semantic_hash": "a7d3a2d65a8b762734156e9fdf815b4d"
+  },
+  "auto_ban.ts": {
+    "mtime": 1784478744.8606071,
+    "ast_hash": "04d4884d4c94aae6ac8e84d43f862d92",
+    "semantic_hash": "04d4884d4c94aae6ac8e84d43f862d92"
+  },
+  "auto_save.ts": {
+    "mtime": 1784399435.6328888,
+    "ast_hash": "c2f6a49c4785a5738da9b7200c104c08",
+    "semantic_hash": "c2f6a49c4785a5738da9b7200c104c08"
+  },
+  "coordination.ts": {
+    "mtime": 1781444894.36957,
+    "ast_hash": "aa07195ddcec2629745bcd25f4e2bab2",
+    "semantic_hash": "aa07195ddcec2629745bcd25f4e2bab2"
+  },
+  "index.ts": {
+    "mtime": 1784514487.9927971,
+    "ast_hash": "a1c73bbaf08f8deee74e399fee6ea13c",
+    "semantic_hash": "a1c73bbaf08f8deee74e399fee6ea13c"
+  },
+  "invoker_combo.ts": {
+    "mtime": 1784478770.4585226,
+    "ast_hash": "8014407abcb72aafd1cfb675404808eb",
+    "semantic_hash": "8014407abcb72aafd1cfb675404808eb"
+  },
+  "largo_combo.ts": {
+    "mtime": 1782416691.8306794,
+    "ast_hash": "3f8e12b3425996d82d31d5f7bf56020e",
+    "semantic_hash": "3f8e12b3425996d82d31d5f7bf56020e"
+  },
+  "last_hit.ts": {
+    "mtime": 1784478744.8622458,
+    "ast_hash": "9fd84f37a970ab2cd50ace2c2d75b86e",
+    "semantic_hash": "9fd84f37a970ab2cd50ace2c2d75b86e"
+  },
+  "magnus_combo.ts": {
+    "mtime": 1784478744.8632863,
+    "ast_hash": "9022d5822c7526bc4756368026c80d07",
+    "semantic_hash": "9022d5822c7526bc4756368026c80d07"
+  },
+  "orbwalker.ts": {
+    "mtime": 1782414520.4466684,
+    "ast_hash": "d88ac3a2074392cbc063f7366cdde7ed",
+    "semantic_hash": "d88ac3a2074392cbc063f7366cdde7ed"
+  },
+  "package.json": {
+    "mtime": 1780555193.2039707,
+    "ast_hash": "cf2d1c2f5971e6e68b9607bd33a5ac0a",
+    "semantic_hash": "cf2d1c2f5971e6e68b9607bd33a5ac0a"
+  },
+  "rubick_combo.ts": {
+    "mtime": 1784478623.2529128,
+    "ast_hash": "ef3def492b4a9c5dfeb88ef7809e00c7",
+    "semantic_hash": "ef3def492b4a9c5dfeb88ef7809e00c7"
+  },
+  "tinker_combo.ts": {
+    "mtime": 1785196638.2944798,
+    "ast_hash": "3cc027d61553297bb0dc13f8dc40cc38",
+    "semantic_hash": "3cc027d61553297bb0dc13f8dc40cc38"
+  },
+  "tsconfig.json": {
+    "mtime": 1780555047.212037,
+    "ast_hash": "378a7eb4e93c0706e875270a0270b374",
+    "semantic_hash": "378a7eb4e93c0706e875270a0270b374"
+  },
+  "tusk_combo.ts": {
+    "mtime": 1784478744.864401,
+    "ast_hash": "46426893f2174b07ec5e430a71d25dc9",
+    "semantic_hash": "46426893f2174b07ec5e430a71d25dc9"
+  },
+  "visage_combo.ts": {
+    "mtime": 1782416677.0109124,
+    "ast_hash": "16ed0dc23e005f769cec6e927c2abe34",
+    "semantic_hash": "16ed0dc23e005f769cec6e927c2abe34"
+  },
+  "INSTRUCTIONS.md": {
+    "mtime": 1780555047.202526,
+    "ast_hash": "2b1996f0db5d8f4d007fc472647162fa",
+    "semantic_hash": "2b1996f0db5d8f4d007fc472647162fa"
+  },
+  "README.md": {
+    "mtime": 1780555047.2080374,
+    "ast_hash": "6dec8b9a47abfbcc1973ad4e5b0645b4",
+    "semantic_hash": "6dec8b9a47abfbcc1973ad4e5b0645b4"
+  },
+  "scripts_reference/last_hit_marker.md": {
+    "mtime": 1780555047.2110338,
+    "ast_hash": "6f44b6824d1450ab782593e21d668a6c",
+    "semantic_hash": "6f44b6824d1450ab782593e21d668a6c"
+  },
+  "scripts_reference/snatcher.md": {
+    "mtime": 1780555047.2110338,
+    "ast_hash": "742b04cefd9546ea2d7d77fccd3ba67c",
+    "semantic_hash": "742b04cefd9546ea2d7d77fccd3ba67c"
+  }
+}
