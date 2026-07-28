@@ -25,6 +25,7 @@ new (class PuckCombo {
 
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Puck combo script")
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Puck combo")
+	private readonly clearCreepKey = this.entry.AddKeybind("Clear Creep Key", "1", "Hold to execute Puck clear creep combo (Cursor Target)")
 	
 	private readonly lockTargetEnabled = this.entry.AddToggle(
 		"Lock Target During Combo",
@@ -156,12 +157,21 @@ new (class PuckCombo {
 		}
 
 		// @ts-ignore
-		if (!this.comboKey.isPressed) {
+		const isHeroCombo = this.comboKey.isPressed
+		// @ts-ignore
+		const isCreepCombo = this.clearCreepKey.isPressed
+
+		if (!isHeroCombo && !isCreepCombo) {
 			this.lockedTarget = undefined
 			return
 		}
 
 		if (hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed || hero.HasBuffByName("modifier_puck_phase_shift")) {
+			return
+		}
+
+		if (isCreepCombo) {
+			this.executeClearCreepCombo(hero)
 			return
 		}
 
@@ -387,5 +397,87 @@ new (class PuckCombo {
 			safeDistancePct: this.smartOrbWalkDistancePct.value,
 			stopToCancel: this.smartOrbWalkStopCancel.value
 		})
+	}
+
+	private executeClearCreepCombo(hero: Hero) {
+		if (this.sleeper.Sleeping) {
+			return
+		}
+
+		const mousePos = InputManager.CursorOnWorld
+		
+		// 1. Blink
+		const blinkEnabled = this.itemsSelector.IsEnabled("item_blink")
+		if (blinkEnabled) {
+			const blink = hero.Items.find(
+				item =>
+					item.Name === "item_blink" ||
+					item.Name === "item_swift_blink" ||
+					item.Name === "item_overwhelming_blink" ||
+					item.Name === "item_arcane_blink"
+			)
+			if (blink && blink.IsValid && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost && !hero.IsMuted) {
+				const dist = hero.Distance2D(mousePos)
+				if (dist > 400) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: mousePos,
+						ability: blink.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
+			}
+		}
+
+		// 2. Waning Rift
+		const waningRift = hero.GetAbilityByName("puck_waning_rift")
+		if (waningRift && waningRift.IsValid && waningRift.Cooldown <= 0.1 && hero.Mana >= waningRift.ManaCost) {
+			hero.CastPosition(waningRift, mousePos)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + waningRift.CastPoint * 1000 + 100)
+			return
+		}
+
+		// 3. Illusory Orb (towards fountain)
+		const illusoryOrb = hero.GetAbilityByName("puck_illusory_orb")
+		if (illusoryOrb && illusoryOrb.IsValid && illusoryOrb.Cooldown <= 0.1 && hero.Mana >= illusoryOrb.ManaCost) {
+			const friendlyFountain = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
+			const fountainPos = friendlyFountain
+				? friendlyFountain.Position.Clone()
+				: (hero.Team === 2 ? new Vector3(-7400, -7300, 512) : new Vector3(7400, 7300, 512))
+			
+			const dir = fountainPos.Subtract(hero.Position).Normalize()
+			const castPos = hero.Position.Add(dir.MultiplyScalar(500))
+			const isVectorTarget = illusoryOrb.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
+			
+			if (isVectorTarget) {
+				const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
+				hero.CastVectorTargetPosition(illusoryOrb, castPos, curveEndPos)
+			} else {
+				hero.CastPosition(illusoryOrb, castPos)
+			}
+			
+			this.sleeper.Sleep(GameState.InputLag * 1000 + illusoryOrb.CastPoint * 1000 + 100)
+			return
+		}
+
+		// 4. Phase Shift
+		const phaseShift = hero.GetAbilityByName("puck_phase_shift")
+		if (phaseShift && phaseShift.IsValid && phaseShift.Cooldown <= 0.1 && hero.Mana >= phaseShift.ManaCost) {
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+				issuers: [hero],
+				ability: phaseShift.Index,
+				queue: false,
+				showEffects: true,
+				isPlayerInput: false
+			})
+			this.sleeper.Sleep(GameState.InputLag * 1000 + phaseShift.CastPoint * 1000 + 100)
+			return
+		}
 	}
 })()

@@ -761,7 +761,7 @@ class CustomLastHit {
 						isPlayerInput: false
 					})
 				}
-				lastAttackTargetIdx = best.creep.Index
+				lastAttackTargetIdx = creep.Index
 				lastAttackOrderTime = GameState.RawServerTime * 1000
 				lastHitSleeper.Sleep(sleepTime(hero) + spell.CastPoint * 1000)
 				return

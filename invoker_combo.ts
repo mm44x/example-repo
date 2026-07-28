@@ -452,7 +452,7 @@ new (class InvokerCombo {
 							})
 						}
 					}
-					
+
 					if (this.executeComboAbility(hero, ability, target, true, target.Position)) {
 						console.log("[InvokerCombo] Timed Sun Strike / Cataclysm casted!")
 						this.sleeper.Sleep(delayBuffer * 1000 + castPoint * 1000 + 100)
@@ -701,123 +701,123 @@ new (class InvokerCombo {
 
 		// --- Auto Skill Handling ---
 		if (!hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
-		for (const [spellName, config] of this.autoSkillConfigs) {
-			// @ts-ignore
-			if (!config.key.isPressed) {
-				continue
-			}
-
-			const ability = hero.GetAbilityByName(spellName)
-			if (!ability || !ability.IsValid || ability.Level <= 0) {
-				continue
-			}
-
-			const invokeAbility = hero.GetAbilityByName("invoker_invoke")
-			const isActive = !ability.IsHidden
-			const modeAutoUse = config.mode.SelectedID === 0 // 0 = Auto Use, 1 = Only Craft
-
-			if (!isActive) {
-				// Need to invoke first
-				if (!invokeAbility || !invokeAbility.IsValid || invokeAbility.Cooldown > 0.1 || hero.Mana < invokeAbility.ManaCost) {
+			for (const [spellName, config] of this.autoSkillConfigs) {
+				// @ts-ignore
+				if (!config.key.isPressed) {
 					continue
 				}
-				if (this.invokeSpell(hero, spellName, invokeAbility)) {
-					if (modeAutoUse) {
-						this.pendingAutoSkill = spellName
-						this.autoSkillCursorPos = InputManager.CursorOnWorld
-						console.log(`[InvokerCombo] Auto Skill: Invoked ${spellName}, pending cast`)
-					} else {
-						console.log(`[InvokerCombo] Auto Skill: Only Craft ${spellName}`)
-					}
-					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-					return
+
+				const ability = hero.GetAbilityByName(spellName)
+				if (!ability || !ability.IsValid || ability.Level <= 0) {
+					continue
 				}
-				continue
-			}
 
-			// Spell is active
-			if (!modeAutoUse) {
-				continue
-			}
+				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+				const isActive = !ability.IsHidden
+				const modeAutoUse = config.mode.SelectedID === 0 // 0 = Auto Use, 1 = Only Craft
 
-			// Auto Use: cast the active spell
-			if (ability.Cooldown > 0.1 || hero.Mana < ability.ManaCost) {
-				continue
-			}
-
-			const cursorPos = InputManager.CursorOnWorld
-
-			if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)) {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-					issuers: [hero],
-					ability: ability.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} (no target)`)
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				this.pendingAutoSkill = null
-				this.autoSkillCursorPos = null
-				return
-			}
-
-			if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
-				const isSelfCast = spellName === "invoker_alacrity"
-				const castTarget = isSelfCast ? hero : (() => {
-					const enemies = EntityManager.GetEntitiesByClass(Hero)
-					let best: Hero | undefined
-					let minDist = Infinity
-					for (const enemy of enemies) {
-						if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
-							const d = enemy.Position.Distance2D(cursorPos)
-							if (d < 800 && d < minDist) {
-								best = enemy
-								minDist = d
-							}
-						}
+				if (!isActive) {
+					// Need to invoke first
+					if (!invokeAbility || !invokeAbility.IsValid || invokeAbility.Cooldown > 0.1 || hero.Mana < invokeAbility.ManaCost) {
+						continue
 					}
-					return best
-				})()
+					if (this.invokeSpell(hero, spellName, invokeAbility)) {
+						if (modeAutoUse) {
+							this.pendingAutoSkill = spellName
+							this.autoSkillCursorPos = InputManager.CursorOnWorld
+							console.log(`[InvokerCombo] Auto Skill: Invoked ${spellName}, pending cast`)
+						} else {
+							console.log(`[InvokerCombo] Auto Skill: Only Craft ${spellName}`)
+						}
+						this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+						return
+					}
+					continue
+				}
 
-				if (castTarget) {
+				// Spell is active
+				if (!modeAutoUse) {
+					continue
+				}
+
+				// Auto Use: cast the active spell
+				if (ability.Cooldown > 0.1 || hero.Mana < ability.ManaCost) {
+					continue
+				}
+
+				const cursorPos = InputManager.CursorOnWorld
+
+				if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)) {
 					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 						issuers: [hero],
-						target: castTarget.Index,
 						ability: ability.Index,
 						queue: false,
 						showEffects: true,
 						isPlayerInput: false
 					})
-					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} on target`)
+					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} (no target)`)
 					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 					this.pendingAutoSkill = null
 					this.autoSkillCursorPos = null
 					return
 				}
-				continue
-			}
 
-			// Point-targeted spell
-			{
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-					issuers: [hero],
-					position: cursorPos,
-					ability: ability.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				this.pendingAutoSkill = null
-				this.autoSkillCursorPos = null
-				return
+				if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
+					const isSelfCast = spellName === "invoker_alacrity"
+					const castTarget = isSelfCast ? hero : (() => {
+						const enemies = EntityManager.GetEntitiesByClass(Hero)
+						let best: Hero | undefined
+						let minDist = Infinity
+						for (const enemy of enemies) {
+							if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
+								const d = enemy.Position.Distance2D(cursorPos)
+								if (d < 800 && d < minDist) {
+									best = enemy
+									minDist = d
+								}
+							}
+						}
+						return best
+					})()
+
+					if (castTarget) {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+							issuers: [hero],
+							target: castTarget.Index,
+							ability: ability.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} on target`)
+						this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+						this.pendingAutoSkill = null
+						this.autoSkillCursorPos = null
+						return
+					}
+					continue
+				}
+
+				// Point-targeted spell
+				{
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: cursorPos,
+						ability: ability.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
+					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+					this.pendingAutoSkill = null
+					this.autoSkillCursorPos = null
+					return
+				}
 			}
-		}
 
 		} // end channeling/stunned check
 
@@ -892,132 +892,132 @@ new (class InvokerCombo {
 		if (this.enableDisrupt && !this.comboKey.isPressed && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
 			if (this.disruptInvis.value || !hero.IsInvisible) {
 
-			let disruptTarget: Hero | undefined
-			let minDist = Infinity
-			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-				if (
-					enemy.IsEnemy(hero) &&
-					enemy.IsAlive &&
-					!enemy.IsIllusion &&
-					!enemy.IsMagicImmune
-				) {
-					const isChanneling =
-						enemy.IsChanneling ||
-						enemy.Buffs.some(b => {
-							// Don't disrupt if an ally is the one channeling
-							if (b.Name === "modifier_pudge_dismember" ||
-								b.Name.startsWith("modifier_bane_fiends_grip") ||
-								b.Name.startsWith("modifier_shadow_shaman_shackles")
-							) {
-								if (b.Caster && !b.Caster.IsEnemy(hero)) {
-									return false
+				let disruptTarget: Hero | undefined
+				let minDist = Infinity
+				for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+					if (
+						enemy.IsEnemy(hero) &&
+						enemy.IsAlive &&
+						!enemy.IsIllusion &&
+						!enemy.IsMagicImmune
+					) {
+						const isChanneling =
+							enemy.IsChanneling ||
+							enemy.Buffs.some(b => {
+								// Don't disrupt if an ally is the one channeling
+								if (b.Name === "modifier_pudge_dismember" ||
+									b.Name.startsWith("modifier_bane_fiends_grip") ||
+									b.Name.startsWith("modifier_shadow_shaman_shackles")
+								) {
+									if (b.Caster && !b.Caster.IsEnemy(hero)) {
+										return false
+									}
+									return true
 								}
-								return true
-							}
-							return (
-								b.Name === "modifier_teleporting" ||
-								b.Name.startsWith("modifier_enigma_black_hole") ||
-								b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
-								b.Name.startsWith("modifier_witch_doctor_voodoo_swtich") ||
-								b.Name.startsWith("modifier_sandking_epicenter_channel") ||
-								b.Name.startsWith("modifier_monkey_king_primal_spring") ||
-								b.Name.startsWith("modifier_elder_titan_echo_stomp_channel") ||
-								b.Name.startsWith("modifier_tinker_rearm")
-							)
+								return (
+									b.Name === "modifier_teleporting" ||
+									b.Name.startsWith("modifier_enigma_black_hole") ||
+									b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+									b.Name.startsWith("modifier_witch_doctor_voodoo_swtich") ||
+									b.Name.startsWith("modifier_sandking_epicenter_channel") ||
+									b.Name.startsWith("modifier_monkey_king_primal_spring") ||
+									b.Name.startsWith("modifier_elder_titan_echo_stomp_channel") ||
+									b.Name.startsWith("modifier_tinker_rearm")
+								)
+							})
+						const isDuelingAlly = enemy.Buffs.some(b => {
+							if (!b.Name.startsWith("modifier_legion_commander_duel")) return false
+							if (!b.Caster) return true // can't verify, assume yes
+							return b.Caster.IsEnemy(hero)
 						})
-					const isDuelingAlly = enemy.Buffs.some(b => {
-						if (!b.Name.startsWith("modifier_legion_commander_duel")) return false
-						if (!b.Caster) return true // can't verify, assume yes
-						return b.Caster.IsEnemy(hero)
-					})
 
-					if (!isChanneling && !isDuelingAlly) {
-						continue
-					}
-					const dist = hero.Distance2D(enemy)
-					if (dist < minDist) {
-						minDist = dist
-						disruptTarget = enemy
-					}
-				}
-			}
-
-			if (disruptTarget) {
-				const useColdSnap = this.disruptSkills.IsEnabled("invoker_cold_snap")
-				const useTornado = this.disruptSkills.IsEnabled("invoker_tornado")
-				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
-				const canInvoke = invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
-				const coldSnapRange = 1000
-
-				let chosenSpell = ""
-
-				// Check Cold Snap availability (active or can be invoked)
-				if (useColdSnap && minDist <= coldSnapRange) {
-					const coldSnap = hero.GetAbilityByName("invoker_cold_snap")
-					if (coldSnap && coldSnap.IsValid && coldSnap.Level > 0) {
-						const csActive = !coldSnap.IsHidden && coldSnap.Cooldown <= 0.1 && hero.Mana >= coldSnap.ManaCost
-						const csInvokable = coldSnap.IsHidden && canInvoke && coldSnap.Cooldown <= 0.1 && hero.Mana >= (coldSnap.ManaCost + invokeAbility.ManaCost)
-						if (csActive || csInvokable) {
-							chosenSpell = "invoker_cold_snap"
+						if (!isChanneling && !isDuelingAlly) {
+							continue
+						}
+						const dist = hero.Distance2D(enemy)
+						if (dist < minDist) {
+							minDist = dist
+							disruptTarget = enemy
 						}
 					}
 				}
 
-				// Fallback to Tornado
-				if (chosenSpell === "" && useTornado) {
-					const tornado = hero.GetAbilityByName("invoker_tornado")
-					if (tornado && tornado.IsValid && tornado.Level > 0) {
-						const tActive = !tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
-						const tInvokable = tornado.IsHidden && canInvoke && tornado.Cooldown <= 0.1 && hero.Mana >= (tornado.ManaCost + invokeAbility.ManaCost)
-						const tornadoRange = tornado.CastRange > 0 ? tornado.CastRange : 2000
-						if ((tActive || tInvokable) && minDist <= tornadoRange) {
-							chosenSpell = "invoker_tornado"
-						}
-					}
-				}
-
-				if (chosenSpell !== "") {
-					const ability = hero.GetAbilityByName(chosenSpell)
+				if (disruptTarget) {
+					const useColdSnap = this.disruptSkills.IsEnabled("invoker_cold_snap")
+					const useTornado = this.disruptSkills.IsEnabled("invoker_tornado")
 					const invokeAbility = hero.GetAbilityByName("invoker_invoke")
-					if (ability && ability.IsValid && ability.Level > 0) {
-						const isActive = !ability.IsHidden
-						if (!isActive) {
-							if (invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost) {
-								if (this.invokeSpell(hero, chosenSpell, invokeAbility)) {
-									console.log(`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`)
-									this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-									return
+					const canInvoke = invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
+					const coldSnapRange = 1000
+
+					let chosenSpell = ""
+
+					// Check Cold Snap availability (active or can be invoked)
+					if (useColdSnap && minDist <= coldSnapRange) {
+						const coldSnap = hero.GetAbilityByName("invoker_cold_snap")
+						if (coldSnap && coldSnap.IsValid && coldSnap.Level > 0) {
+							const csActive = !coldSnap.IsHidden && coldSnap.Cooldown <= 0.1 && hero.Mana >= coldSnap.ManaCost
+							const csInvokable = coldSnap.IsHidden && canInvoke && coldSnap.Cooldown <= 0.1 && hero.Mana >= (coldSnap.ManaCost + invokeAbility.ManaCost)
+							if (csActive || csInvokable) {
+								chosenSpell = "invoker_cold_snap"
+							}
+						}
+					}
+
+					// Fallback to Tornado
+					if (chosenSpell === "" && useTornado) {
+						const tornado = hero.GetAbilityByName("invoker_tornado")
+						if (tornado && tornado.IsValid && tornado.Level > 0) {
+							const tActive = !tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
+							const tInvokable = tornado.IsHidden && canInvoke && tornado.Cooldown <= 0.1 && hero.Mana >= (tornado.ManaCost + invokeAbility.ManaCost)
+							const tornadoRange = tornado.CastRange > 0 ? tornado.CastRange : 2000
+							if ((tActive || tInvokable) && minDist <= tornadoRange) {
+								chosenSpell = "invoker_tornado"
+							}
+						}
+					}
+
+					if (chosenSpell !== "") {
+						const ability = hero.GetAbilityByName(chosenSpell)
+						const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+						if (ability && ability.IsValid && ability.Level > 0) {
+							const isActive = !ability.IsHidden
+							if (!isActive) {
+								if (invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost) {
+									if (this.invokeSpell(hero, chosenSpell, invokeAbility)) {
+										console.log(`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`)
+										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+										return
+									}
 								}
+							} else if (ability.Cooldown <= 0.1 && hero.Mana >= ability.ManaCost) {
+								if (chosenSpell === "invoker_cold_snap") {
+									ExecuteOrder.PrepareOrder({
+										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+										issuers: [hero],
+										target: disruptTarget.Index,
+										ability: ability.Index,
+										queue: false,
+										showEffects: true,
+										isPlayerInput: false
+									})
+								} else {
+									ExecuteOrder.PrepareOrder({
+										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+										issuers: [hero],
+										position: disruptTarget.Position,
+										ability: ability.Index,
+										queue: false,
+										showEffects: true,
+										isPlayerInput: false
+									})
+								}
+								console.log(`[InvokerCombo] Auto Disrupt: Cast ${chosenSpell} on ${disruptTarget.Name}`)
+								this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+								return
 							}
-						} else if (ability.Cooldown <= 0.1 && hero.Mana >= ability.ManaCost) {
-							if (chosenSpell === "invoker_cold_snap") {
-								ExecuteOrder.PrepareOrder({
-									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-									issuers: [hero],
-									target: disruptTarget.Index,
-									ability: ability.Index,
-									queue: false,
-									showEffects: true,
-									isPlayerInput: false
-								})
-							} else {
-								ExecuteOrder.PrepareOrder({
-									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-									issuers: [hero],
-									position: disruptTarget.Position,
-									ability: ability.Index,
-									queue: false,
-									showEffects: true,
-									isPlayerInput: false
-								})
-							}
-							console.log(`[InvokerCombo] Auto Disrupt: Cast ${chosenSpell} on ${disruptTarget.Name}`)
-							this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-							return
 						}
 					}
 				}
-			}
 			}
 		}
 
@@ -1176,7 +1176,7 @@ new (class InvokerCombo {
 									continue
 								}
 								// Predict position: 1.7s sunstrike delay * movement speed
-								const moveSpeed = enemy.MovementSpeed > 0 ? enemy.MovementSpeed : 350
+								const moveSpeed = enemy.MoveSpeed > 0 ? enemy.MoveSpeed : 350
 								const predTime = 1.7
 								const predDistance = moveSpeed * predTime
 								const forward = enemy.Forward
@@ -1404,7 +1404,7 @@ new (class InvokerCombo {
 				const meteor = hero.GetAbilityByName("invoker_chaos_meteor")
 				const sunstrike = hero.GetAbilityByName("invoker_sun_strike")
 				const deafening = hero.GetAbilityByName("invoker_deafening_blast")
-				
+
 				const meteorOnCd = !meteor || meteor.Level <= 0 || meteor.Cooldown > 2.0
 				const sunstrikeOnCd = !sunstrike || sunstrike.Level <= 0 || sunstrike.Cooldown > 2.0
 				const deafeningOnCd = !deafening || deafening.Level <= 0 || deafening.Cooldown > 2.0
