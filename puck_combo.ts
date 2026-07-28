@@ -324,8 +324,7 @@ new (class PuckCombo {
 			if (isTargetImmune && spellName !== "puck_dream_coil") {
 				continue // Dream coil pierces BKB in some cases or is commonly thrown anyway.
 			}
-
-			// Special Handling: Illusory Orb (towards fountain, check vector target)
+			// Special Handling: Illusory Orb (towards fountain)
 			if (spellName === "puck_illusory_orb") {
 				// Cast towards team fountain
 				const friendlyFountain = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
@@ -336,43 +335,16 @@ new (class PuckCombo {
 				const dir = fountainPos.Subtract(hero.Position).Normalize()
 				// Cap distance to prevent walking
 				const castPos = hero.Position.Add(dir.MultiplyScalar(500))
-				// Extend the direction for the vector curve endpoint
-				const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
 
 				const isVectorTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
 				if (isVectorTarget) {
-					// Set the curve direction
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION,
-						issuers: [hero],
-						position: curveEndPos,
-						ability: ability.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-					
-					// Execute the actual cast at the starting point
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: castPos,
-						ability: ability.Index,
-						queue: true,
-						showEffects: true,
-						isPlayerInput: false
-					})
+					// Use the wrapper's built-in CastVectorTargetPosition method
+					// The curveEndPos is the same direction to make it straight
+					const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
+					hero.CastVectorTargetPosition(ability, castPos, curveEndPos)
 				} else {
-					// Standard point target (e.g. Jostling Rift facet)
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: castPos,
-						ability: ability.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
+					// Standard point target
+					hero.CastPosition(ability, castPos)
 				}
 				
 				console.log("[PuckCombo] Casted Illusory Orb towards Fountain")
