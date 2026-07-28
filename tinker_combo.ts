@@ -105,6 +105,8 @@ new (class TinkerCombo {
 	private isDraggingDebug = false
 
 	private readonly sleeper = new TickSleeper()
+	private readonly rearmModifierSleeper = new TickSleeper()
+	private pendingBottleAfterRearm = false
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
@@ -123,6 +125,8 @@ new (class TinkerCombo {
 		this.autoFarmSleeper.Sleep(0)
 		this.isAutoFarming = false
 		this.farmKeyWasPressed = false
+		this.pendingBottleAfterRearm = false
+		this.rearmModifierSleeper.Sleep(0)
 		debugSpellInfo.length = 0
 		spellInfoFrameCount = 0
 	}
@@ -198,6 +202,31 @@ new (class TinkerCombo {
 		return undefined
 	}
 
+	private tryBottle(hero: Hero): boolean {
+		if (!this.itemsSelector.IsEnabled("item_bottle")) return false
+		if (hero.Mana >= hero.MaxMana * 0.95 && hero.HP >= hero.MaxHP * 0.95) return false
+		if (hero.HasBuffByName("modifier_bottle_regeneration")) return false
+
+		const bottle = hero.Items.find(i => i.Name === "item_bottle")
+		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) return false
+		if (bottle.CurrentCharges <= 0) return false
+
+		this.castNoTarget(hero, bottle)
+		return true
+	}
+
+	private handlePendingBottle(hero: Hero): void {
+		if (!this.pendingBottleAfterRearm) return
+		if (this.rearmModifierSleeper.Sleeping) return
+
+		const hasRearmModifier = hero.HasBuffByName("modifier_tinker_rearm")
+		if (hasRearmModifier) return
+
+		// Rearm selesai/batal
+		this.pendingBottleAfterRearm = false
+		this.tryBottle(hero)
+	}
+
 	// --- Blink ---
 
 	private doBlink(hero: Hero, position: Vector3): boolean {
@@ -246,6 +275,18 @@ new (class TinkerCombo {
 		return spellOnCd || itemOnCd
 	}
 
+	private getRearmChannelDuration(hero: Hero): number {
+		const rearm = hero.GetAbilityByName("tinker_rearm")
+		if (rearm && rearm.IsValid && rearm.Level > 0) {
+			const maxChannel = rearm.MaxChannelTime
+			if (maxChannel > 0) return maxChannel
+			const channelTimes = [2.75, 2.0, 1.25]
+			const levelIndex = Math.max(0, Math.min(rearm.Level - 1, channelTimes.length - 1))
+			return channelTimes[levelIndex]
+		}
+		return 1.25
+	}
+
 	private getDagonItem(hero: Hero): Ability | undefined {
 		for (const name of ["item_dagon_5", "item_dagon_4", "item_dagon_3", "item_dagon_2", "item_dagon"]) {
 			const item = hero.Items.find(i => i.Name === name)
@@ -253,6 +294,7 @@ new (class TinkerCombo {
 		}
 		return undefined
 	}
+
 
 	private hasWarpGrenade(hero: Hero): boolean {
 		const wg = hero.GetAbilityByName("tinker_warp_grenade")
@@ -274,7 +316,12 @@ new (class TinkerCombo {
 				const rearm = hero.GetAbilityByName("tinker_rearm")
 				if (rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost + march.ManaCost) {
 					this.castNoTarget(hero, rearm)
-					this.spamMarchSleeper.Sleep(GameState.InputLag * 1000 + (rearm.CastPoint > 0 ? rearm.CastPoint : 0.75) * 1000 + 200)
+					const channelDur = this.getRearmChannelDuration(hero)
+					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
+					this.spamMarchSleeper.Sleep(totalWait)
+					this.sleeper.Sleep(totalWait)
+					this.pendingBottleAfterRearm = true
+					this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
 					return true
 				}
 			}
@@ -399,7 +446,12 @@ new (class TinkerCombo {
 				const rearm = hero.GetAbilityByName("tinker_rearm")
 				if (rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost) {
 					this.castNoTarget(hero, rearm)
-					this.autoFarmSleeper.Sleep(GameState.InputLag * 1000 + (rearm.CastPoint > 0 ? rearm.CastPoint : 0.75) * 1000 + 200)
+					const channelDur = this.getRearmChannelDuration(hero)
+					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
+					this.autoFarmSleeper.Sleep(totalWait)
+					this.sleeper.Sleep(totalWait)
+					this.pendingBottleAfterRearm = true
+					this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
 					return true
 				}
 			}
@@ -525,6 +577,8 @@ new (class TinkerCombo {
 
 		if (!this.comboEnabled.value) return
 
+		this.handlePendingBottle(hero)
+
 		if (this.handleBlinkKey(hero)) return
 		if (this.handleSpamMarch(hero)) return
 
@@ -615,14 +669,11 @@ new (class TinkerCombo {
 				case "tinker_rearm": {
 					if (!this.shouldRearm(hero)) continue
 					this.castNoTarget(hero, ability)
-					const channelTime = ability.CastPoint > 0 ? ability.CastPoint : 0.75
-					this.sleeper.Sleep(GameState.InputLag * 1000 + channelTime * 1000 + 200)
-					if (this.itemsSelector.IsEnabled("item_bottle") && hero.Mana < hero.MaxMana * 0.7) {
-						const bottle = hero.Items.find(i => i.Name === "item_bottle")
-						if (bottle && bottle.IsValid && bottle.CanBeUsable && !hero.IsMuted && bottle.Cooldown <= 0.1) {
-							this.castNoTarget(hero, bottle)
-						}
-					}
+					const channelDur = this.getRearmChannelDuration(hero)
+					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
+					this.sleeper.Sleep(totalWait)
+					this.pendingBottleAfterRearm = true
+					this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
 					return
 				}
 			}
