@@ -186,8 +186,12 @@ new (class AutoSaveUtility {
 			"shadow_demon_disruption",
 			"vengefulspirit_nether_swap",
 			"pugna_decrepify",
-			"nyx_assassin_spiked_carapace",
-			"oracle_false_promise"
+			"oracle_false_promise",
+			"abaddon_aphotic_shield",
+			"legion_commander_press_the_attack",
+			"obsidian_destroyer_astral_imprisonment",
+			"weaver_time_lapse",
+			"omniknight_repel"
 		],
 		new Map([
 			["dazzle_shallow_grave", true],
@@ -195,8 +199,12 @@ new (class AutoSaveUtility {
 			["shadow_demon_disruption", true],
 			["vengefulspirit_nether_swap", true],
 			["pugna_decrepify", true],
-			["nyx_assassin_spiked_carapace", true],
-			["oracle_false_promise", true]
+			["oracle_false_promise", true],
+			["abaddon_aphotic_shield", true],
+			["legion_commander_press_the_attack", true],
+			["obsidian_destroyer_astral_imprisonment", true],
+			["weaver_time_lapse", true],
+			["omniknight_repel", true]
 		]),
 		"Enable or disable specific hero spells for saving",
 		true
@@ -217,7 +225,8 @@ new (class AutoSaveUtility {
 			"item_guardian_greaves",
 			"item_cyclone",
 			"item_manta",
-			"item_aeon_disk"
+			"item_glimmer_cape",
+			"item_force_staff"
 		],
 		new Map([
 			["item_lotus_orb", true],
@@ -226,7 +235,8 @@ new (class AutoSaveUtility {
 			["item_guardian_greaves", true],
 			["item_cyclone", true],
 			["item_manta", true],
-			["item_aeon_disk", true]
+			["item_glimmer_cape", true],
+			["item_force_staff", true]
 		]),
 		"Enable or disable specific items for saving",
 		true
@@ -271,7 +281,6 @@ new (class AutoSaveUtility {
 	private readonly mantaNode = this.itemsNode.AddNode("Manta Style")
 	private readonly mantaDispelSilence = this.mantaNode.AddToggle("Dispel Silence", true)
 	private readonly mantaDispelRoot = this.mantaNode.AddToggle("Dispel Root", true)
-	private readonly mantaDodgeProjectiles = this.mantaNode.AddToggle("Dodge Projectiles/Threats", true)
 	private readonly mantaOnlyDanger = this.mantaNode.AddToggle("Only Save if in Danger", true)
 
 	private readonly castSleeper = new TickSleeper()
@@ -435,30 +444,6 @@ new (class AutoSaveUtility {
 							}
 							if (enemy.Distance2D(target, true) <= castRange + 150) {
 								return true
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Detect ready instant-cast threats (hex, orchid, abyssal, etc.) without projectile/phase
-		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				const items = enemy.HasInventory ? enemy.Items.filter((i): i is Item => i !== undefined) : []
-				const abilities = [...spells, ...items]
-
-				for (const abil of abilities) {
-					if (INSTANT_REFLECTABLE_SPELLS.includes(abil.Name)) {
-						const isReady =
-							(abil.Level > 0 || abil instanceof Item) && abil.Cooldown <= 0.1 && enemy.IsManaEnough(abil)
-						if (isReady) {
-							if (enemy.FindRotationAngle(target) < 0.15) {
-								const castRange = abil.CastRange > 0 ? abil.CastRange : 600
-								if (enemy.Distance2D(target, true) <= castRange + 50) {
-									return true
-								}
 							}
 						}
 					}
@@ -982,24 +967,127 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 6. Nyx Assassin Spiked Carapace Logic
+		// 6. Abaddon Aphotic Shield Logic
 		if (
-			this.heroSpellsSelector.IsEnabled("nyx_assassin_spiked_carapace") &&
-			hero.Name === "npc_dota_hero_nyx_assassin" &&
+			this.heroSpellsSelector.IsEnabled("abaddon_aphotic_shield") &&
+			hero.Name === "npc_dota_hero_abaddon" &&
 			!hero.IsSilenced &&
 			!hero.IsStunned &&
 			!hero.IsHexed
 		) {
-			const carapace = hero.GetAbilityByName("nyx_assassin_spiked_carapace")
-			if (
-				carapace &&
-				carapace.IsValid &&
-				carapace.Level > 0 &&
-				carapace.Cooldown <= 0.1 &&
-				hero.IsManaEnough(carapace)
-			) {
+			const shield = hero.GetAbilityByName("abaddon_aphotic_shield")
+			if (shield && shield.IsValid && shield.Level > 0 && shield.Cooldown <= 0.1 && hero.IsManaEnough(shield)) {
+				const castRange = shield.CastRange > 0 ? shield.CastRange : 500
+
+				for (const target of orderedAllies) {
+					if (target.HasBuffByName("modifier_abaddon_aphotic_shield")) {
+						continue
+					}
+					// Aphotic Shield dispels stuns!
+					const needsDispel = target.IsStunned || target.IsHexed || target.IsRooted || target.IsSilenced
+					if (
+						needsDispel ||
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(shield, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 6b. Legion Commander Press The Attack Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("legion_commander_press_the_attack") &&
+			hero.Name === "npc_dota_hero_legion_commander" &&
+			!hero.IsSilenced &&
+			!hero.IsStunned &&
+			!hero.IsHexed
+		) {
+			const pta = hero.GetAbilityByName("legion_commander_press_the_attack")
+			if (pta && pta.IsValid && pta.Level > 0 && pta.Cooldown <= 0.1 && hero.IsManaEnough(pta)) {
+				const castRange = pta.CastRange > 0 ? pta.CastRange : 700
+
+				for (const target of orderedAllies) {
+					const needsDispel = target.IsStunned || target.IsHexed || target.IsRooted || target.IsSilenced
+					if (
+						needsDispel ||
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(pta, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 6c. OD Astral Imprisonment Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("obsidian_destroyer_astral_imprisonment") &&
+			hero.Name === "npc_dota_hero_obsidian_destroyer" &&
+			!hero.IsSilenced &&
+			!hero.IsStunned &&
+			!hero.IsHexed
+		) {
+			const astral = hero.GetAbilityByName("obsidian_destroyer_astral_imprisonment")
+			if (astral && astral.IsValid && astral.Level > 0 && astral.Cooldown <= 0.1 && hero.IsManaEnough(astral)) {
+				const castRange = astral.CastRange > 0 ? astral.CastRange : 650
+
+				for (const target of orderedAllies) {
+					if (
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(astral, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 6d. Weaver Time Lapse Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("weaver_time_lapse") &&
+			hero.Name === "npc_dota_hero_weaver" &&
+			!hero.IsSilenced &&
+			!hero.IsHexed &&
+			!hero.IsStunned // Although time lapse can be cast while stunned if Aghs, let's keep it safe for now. Wait, aghs allows casting while stunned? We will ignore that detail for simplicity unless we check Aghs.
+		) {
+			const lapse = hero.GetAbilityByName("weaver_time_lapse")
+			if (lapse && lapse.IsValid && lapse.Level > 0 && lapse.Cooldown <= 0.1 && hero.IsManaEnough(lapse)) {
+				const hasAghs = hero.Items.some(i => i.Name === "item_ultimate_scepter") || hero.HasBuffByName("modifier_item_ultimate_scepter_consumed")
+				
+				// Self save
 				if (
-					!hero.HasBuffByName("modifier_nyx_assassin_spiked_carapace") &&
 					this.shouldSaveTarget(
 						hero,
 						allHeroes,
@@ -1010,8 +1098,70 @@ new (class AutoSaveUtility {
 						this.heroFatal.value
 					)
 				) {
-					this.executeAndClaimOrder(() => hero.CastNoTarget(carapace), delay)
+					this.executeAndClaimOrder(() => hero.CastNoTarget(lapse), delay)
 					return
+				}
+
+				// Ally save (Requires Aghanim's Scepter)
+				if (hasAghs) {
+					const castRange = 500
+					for (const target of orderedAllies) {
+						if (target === hero) continue
+						if (
+							this.shouldSaveTarget(
+								target,
+								allHeroes,
+								hero,
+								this.heroMinHP.value,
+								this.heroOnlyDanger.value,
+								this.heroLowHP.value,
+								this.heroFatal.value
+							)
+						) {
+							if (hero.Distance2D(target, true) <= castRange) {
+								this.executeAndClaimOrder(() => hero.CastTarget(lapse, target), delay)
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 6e. Omniknight Repel (Heavenly Grace) Logic
+		if (
+			this.heroSpellsSelector.IsEnabled("omniknight_repel") &&
+			hero.Name === "npc_dota_hero_omniknight" &&
+			!hero.IsSilenced &&
+			!hero.IsStunned &&
+			!hero.IsHexed
+		) {
+			const repel = hero.GetAbilityByName("omniknight_repel")
+			if (repel && repel.IsValid && repel.Level > 0 && repel.Cooldown <= 0.1 && hero.IsManaEnough(repel)) {
+				const castRange = repel.CastRange > 0 ? repel.CastRange : 500
+
+				for (const target of orderedAllies) {
+					if (target.HasBuffByName("modifier_omniknight_repel")) {
+						continue
+					}
+					const needsDispel = target.IsStunned || target.IsHexed || target.IsRooted || target.IsSilenced
+					if (
+						needsDispel ||
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(repel, target), delay)
+							return
+						}
+					}
 				}
 			}
 		}
@@ -1372,7 +1522,71 @@ new (class AutoSaveUtility {
 			}
 		}
 
-		// 13. Manta Style Logic
+		// 13. Glimmer Cape Logic
+		if (this.itemsSelector.IsEnabled("item_glimmer_cape") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
+			const glimmer = hero.GetItemByName("item_glimmer_cape")
+			if (glimmer && glimmer.CanBeUsable && glimmer.Cooldown <= 0.1 && hero.IsManaEnough(glimmer)) {
+				const castRange = 800
+				for (const target of orderedAllies) {
+					if (target.HasBuffByName("modifier_item_glimmer_cape")) {
+						continue
+					}
+					
+					// Save if under magic threat, fatal debuff, or low HP
+					if (
+						this.isUnderOrTargetedByMagicThreat(target, allHeroes) ||
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(glimmer, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 14. Force Staff / Hurricane Pike Logic
+		if (this.itemsSelector.IsEnabled("item_force_staff") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
+			const pike = hero.GetItemByName("item_hurricane_pike")
+			const force = hero.GetItemByName("item_force_staff")
+			const forceItem = pike && pike.CanBeUsable && pike.Cooldown <= 0.1 ? pike : 
+							  (force && force.CanBeUsable && force.Cooldown <= 0.1 && hero.IsManaEnough(force) ? force : undefined)
+			
+			if (forceItem) {
+				const castRange = forceItem.Name === "item_hurricane_pike" ? 650 : 550
+				for (const target of orderedAllies) {
+					// Check if target is facing away from enemies? Hard to check without complex logic.
+					// We'll just push them if they are in danger.
+					if (
+						this.shouldSaveTarget(
+							target,
+							allHeroes,
+							hero,
+							this.heroMinHP.value,
+							this.heroOnlyDanger.value,
+							this.heroLowHP.value,
+							this.heroFatal.value
+						)
+					) {
+						if (hero.Distance2D(target, true) <= castRange) {
+							this.executeAndClaimOrder(() => hero.CastTarget(forceItem, target), delay)
+							return
+						}
+					}
+				}
+			}
+		}
+
+		// 15. Manta Style Logic
 		if (this.itemsSelector.IsEnabled("item_manta") && !hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			const manta = hero.GetItemByName("item_manta")
 			if (manta && manta.CanBeUsable && manta.Cooldown <= 0.1 && hero.IsManaEnough(manta)) {
@@ -1386,17 +1600,8 @@ new (class AutoSaveUtility {
 					shouldCastManta = true
 				}
 
-				// 2. Dodge Projectiles or incoming threats targeted at us
-				if (!shouldCastManta && this.mantaDodgeProjectiles.value) {
-					if (
-						this.isAboutToBeTargetedByReflectableThreat(hero, allHeroes) ||
-						this.isUnderOrTargetedByMagicThreat(hero, allHeroes)
-					) {
-						shouldCastManta = true
-					}
-				}
-
-				// 3. Dispel fatal debuffs / active threats (stun, hex, silence, track, etc.)
+				// 2. Dispel fatal debuffs / active threats (stun, hex, silence, track, etc.)
+				// (Stun/Hex won't trigger because of IsStunned/IsHexed checks above, but Track/Orchid will)
 				if (!shouldCastManta) {
 					if (this.hasFatalDebuff(hero) || this.hasActiveThreatModifier(hero)) {
 						shouldCastManta = true
