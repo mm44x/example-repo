@@ -52,13 +52,14 @@ new (class TinkerCombo {
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_sheepstick", "item_ethereal_blade", "item_dagon", "item_shivas_guard", "item_bottle"],
+		["item_blink", "item_sheepstick", "item_ethereal_blade", "item_dagon", "item_shivas_guard", "item_black_king_bar", "item_bottle"],
 		new Map([
 			["item_blink", true],
 			["item_sheepstick", true],
 			["item_ethereal_blade", true],
 			["item_dagon", true],
 			["item_shivas_guard", true],
+			["item_black_king_bar", true],
 			["item_bottle", true]
 		]),
 		"Toggle item usage in the combo"
@@ -71,12 +72,7 @@ new (class TinkerCombo {
 	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 5)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle("Stop-to-Cancel Backswing", false)
 
-	// Combo Skills toggles
-	private readonly comboSkillsNode = this.entry.AddNode("Combo Skills")
-	private readonly useLaser = this.comboSkillsNode.AddToggle("Use Laser", true)
-	private readonly useMarch = this.comboSkillsNode.AddToggle("Use March of the Machines", true)
-	private readonly useTurrets = this.comboSkillsNode.AddToggle("Use Deploy Turrets", true)
-	private readonly useWarpFlare = this.comboSkillsNode.AddToggle("Use Warp Flare (Shard)", true)
+	private comboSequenceGrid: any
 
 	// Spam March
 	private readonly spamMarchNode = this.entry.AddNode("Spam March")
@@ -109,6 +105,15 @@ new (class TinkerCombo {
 	private pendingBottleAfterRearm = false
 
 	constructor() {
+		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
+		COMBO_SPELLS.forEach((name, i) => defaultCombo.set(name, [true, true, true, i]))
+
+		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
+			"Combo Order",
+			COMBO_SPELLS,
+			defaultCombo
+		)
+
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
@@ -127,6 +132,7 @@ new (class TinkerCombo {
 		this.farmKeyWasPressed = false
 		this.pendingBottleAfterRearm = false
 		this.rearmModifierSleeper.Sleep(0)
+		this.comboSequenceGrid = null
 		debugSpellInfo.length = 0
 		spellInfoFrameCount = 0
 	}
@@ -533,7 +539,6 @@ new (class TinkerCombo {
 				{ text: comboPressed ? "Combo: ACTIVE" : "Combo: idle", size: 13, weight: 400, color: comboPressed ? Color.Green : Color.Gray },
 				{ text: spamPressed ? "Spam March: ACTIVE" : "Spam March: idle", size: 13, weight: 400, color: spamPressed ? Color.Green : Color.Gray },
 				{ text: this.isAutoFarming ? "Auto Farm: ON" : "Auto Farm: OFF", size: 13, weight: this.isAutoFarming ? 700 : 400, color: this.isAutoFarming ? Color.Green : Color.Gray },
-				{ text: `L=${this.useLaser.value ? "ON" : "OFF"} M=${this.useMarch.value ? "ON" : "OFF"} T=${this.useTurrets.value ? "ON" : "OFF"} W=${this.useWarpFlare.value ? "ON" : "OFF"}`, size: 11, weight: 400, color: Color.LightGray },
 			]
 			this.drawPanel(this.statusHudPos, { val: this.isDraggingStatus }, statusLines)
 		}
@@ -603,6 +608,25 @@ new (class TinkerCombo {
 		const isImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
 		// --- Items ---
+		// BKB: cast sebelum combo kalau musuh dalam radius dan belum aktif
+		if (this.itemsSelector.IsEnabled("item_black_king_bar") && distToTarget <= 900) {
+			const bkb = hero.Items.find(i => i.Name === "item_black_king_bar")
+			if (
+				bkb && bkb.IsValid && bkb.CanBeUsable && !hero.IsMuted &&
+				bkb.Cooldown <= 0.1 && hero.Mana >= bkb.ManaCost &&
+				!hero.HasBuffByName("modifier_black_king_bar_immune")
+			) {
+				const nearbyEnemies = EntityManager.GetEntitiesByClass(Hero).filter(
+					e => e.IsValid && e.IsAlive && e.IsVisible && e.IsEnemy(hero) && !e.IsIllusion && hero.Distance2D(e) <= 900
+				)
+				if (nearbyEnemies.length > 0) {
+					this.castNoTarget(hero, bkb)
+					this.sleeper.Sleep(GameState.InputLag * 1000 + bkb.CastPoint * 1000 + 100)
+					return
+				}
+			}
+		}
+
 		if (!isImmune) {
 			if (this.itemsSelector.IsEnabled("item_sheepstick") && distToTarget <= 850) {
 				const hex = this.tryCastItem(hero, "item_sheepstick", bestTarget)
@@ -626,14 +650,14 @@ new (class TinkerCombo {
 		}
 
 		// --- Spell Combo ---
-		for (const spellName of COMBO_SPELLS) {
-			// Check manual toggle
-			switch (spellName) {
-				case "tinker_laser": if (!this.useLaser.value) continue; break
-				case "tinker_march_of_the_machines": if (!this.useMarch.value) continue; break
-				case "tinker_deploy_turrets": if (!this.useTurrets.value) continue; break
-				case "tinker_warp_grenade": if (!this.useWarpFlare.value) continue; break
-			}
+		// Iterate combo order grid (urutan sudah disortir by priority dari grid)
+		const gridOrder: string[] = this.comboSequenceGrid
+			? this.comboSequenceGrid.values
+			: COMBO_SPELLS
+
+		for (const spellName of gridOrder) {
+			if (!COMBO_SPELLS.includes(spellName)) continue
+			if (this.comboSequenceGrid && !this.comboSequenceGrid.IsEnabled(spellName)) continue
 
 			const ability = hero.GetAbilityByName(spellName)
 			if (!ability || !ability.IsValid || ability.IsHidden) continue
