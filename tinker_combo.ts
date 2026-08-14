@@ -92,6 +92,18 @@ new (class TinkerCombo {
 	private readonly autoFarmSleeper = new TickSleeper()
 	private farmKeyWasPressed = false
 
+	// Auto Bottle in Fountain
+	private readonly autoBottleFountain = this.entry.AddToggle(
+		"Auto Bottle in Fountain",
+		true,
+		"Automatically use Bottle when near own fountain and low on HP/Mana. Skips while channeling (Rearm, TP, Keen Conveyance).",
+		0,
+		"panorama/images/items/item_bottle_png.vtex_c"
+	)
+	private readonly bottleFountainHpPct = this.entry.AddSlider("Bottle Fountain HP %", 70, 5, 100, 5)
+	private readonly bottleFountainManaPct = this.entry.AddSlider("Bottle Fountain Mana %", 60, 5, 100, 5)
+	private readonly bottleFountainSleeper = new TickSleeper()
+
 	// HUD — dua panel terpisah: status + debug
 	private readonly showHud = this.entry.AddToggle("Show Status HUD", true)
 	private readonly showDebugHud = this.entry.AddToggle("Show Debug HUD", true)
@@ -132,6 +144,7 @@ new (class TinkerCombo {
 		this.farmKeyWasPressed = false
 		this.pendingBottleAfterRearm = false
 		this.rearmModifierSleeper.Sleep(0)
+		this.bottleFountainSleeper.Sleep(0)
 		this.comboSequenceGrid = null
 		debugSpellInfo.length = 0
 		spellInfoFrameCount = 0
@@ -231,6 +244,57 @@ new (class TinkerCombo {
 		// Rearm selesai/batal
 		this.pendingBottleAfterRearm = false
 		this.tryBottle(hero)
+	}
+
+	// --- Auto Bottle in Fountain ---
+
+	private isInOwnFountain(hero: Hero): boolean {
+		// Deteksi fountain via buff aura — cara yang dipakai armlet_abuse di repo ini.
+		// Jauh lebih reliable daripada entity Fountain (yang LifeState/Team-nya bisa tidak ter-sync).
+		return hero.HasBuffByName("modifier_fountain_aura_buff")
+	}
+
+	private handleAutoBottleFountain(hero: Hero): void {
+		if (!this.autoBottleFountain.value) return
+		if (this.bottleFountainSleeper.Sleeping) return
+
+		// Jangan ganggu channeling: Rearm, TP (Keen Conveyance), dll
+		if (hero.IsChanneling || hero.IsInAbilityPhase) return
+
+		// Hanya di fountain sendiri
+		if (!this.isInOwnFountain(hero)) return
+
+		// Bottle butuh charges & regenerasi belum aktif
+		if (hero.HasBuffByName("modifier_bottle_regeneration")) return
+
+		const hpPct = (hero.HP / hero.MaxHP) * 100
+		const manaPct = (hero.Mana / hero.MaxMana) * 100
+		if (hpPct >= this.bottleFountainHpPct.value && manaPct >= this.bottleFountainManaPct.value) return
+
+		const bottle = hero.Items.find(i => i.Name === "item_bottle")
+		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) return
+		if (bottle.CurrentCharges <= 0) return
+
+		this.castNoTarget(hero, bottle)
+		this.bottleFountainSleeper.Sleep(GameState.InputLag * 1000 + 500)
+	}
+
+	// Debug: status auto bottle (dipanggil dari Draw)
+	private getAutoBottleDebug(): string {
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid) return "AutoBottle: no hero"
+		const parts: string[] = []
+		parts.push(`en=${this.autoBottleFountain.value}`)
+		parts.push(`fount=${this.isInOwnFountain(hero)}`)
+		parts.push(`ch=${hero.IsChanneling}`)
+		parts.push(`ph=${hero.IsInAbilityPhase}`)
+		parts.push(`buff=${hero.HasBuffByName("modifier_bottle_regeneration")}`)
+		parts.push(`hp=${((hero.HP / hero.MaxHP) * 100).toFixed(0)}%`)
+		parts.push(`mp=${((hero.Mana / hero.MaxMana) * 100).toFixed(0)}%`)
+		parts.push(`thr=${this.bottleFountainHpPct.value}/${this.bottleFountainManaPct.value}`)
+		const bottle = hero.Items.find(i => i.Name === "item_bottle")
+		parts.push(`bot=${bottle ? `chg=${bottle.CurrentCharges} cd=${bottle.Cooldown.toFixed(1)}` : "none"}`)
+		return "AutoBottle: " + parts.join(" ")
 	}
 
 	// --- Blink ---
@@ -539,6 +603,7 @@ new (class TinkerCombo {
 				{ text: comboPressed ? "Combo: ACTIVE" : "Combo: idle", size: 13, weight: 400, color: comboPressed ? Color.Green : Color.Gray },
 				{ text: spamPressed ? "Spam March: ACTIVE" : "Spam March: idle", size: 13, weight: 400, color: spamPressed ? Color.Green : Color.Gray },
 				{ text: this.isAutoFarming ? "Auto Farm: ON" : "Auto Farm: OFF", size: 13, weight: this.isAutoFarming ? 700 : 400, color: this.isAutoFarming ? Color.Green : Color.Gray },
+				{ text: this.getAutoBottleDebug(), size: 11, weight: 400, color: Color.LightGray },
 			]
 			this.drawPanel(this.statusHudPos, { val: this.isDraggingStatus }, statusLines)
 		}
@@ -579,6 +644,9 @@ new (class TinkerCombo {
 			}
 			debugSpellInfo.push(`HasShard: ${hero.HasShard} Mana: ${hero.Mana.toFixed(0)}/${hero.MaxMana}`)
 		}
+
+		// Auto Bottle in Fountain (background — jalan walau combo disabled)
+		this.handleAutoBottleFountain(hero)
 
 		if (!this.comboEnabled.value) return
 
