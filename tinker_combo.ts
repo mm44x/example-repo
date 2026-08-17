@@ -7,15 +7,17 @@ import {
 	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
-	GameRules,
+	Fountain,
 	GameState,
 	Hero,
 	InputManager,
 	LocalPlayer,
 	Menu,
+	Outpost,
 	Rectangle,
 	RendererSDK,
 	TickSleeper,
+	Unit,
 	Vector2,
 	Vector3,
 	VMouseKeys
@@ -52,7 +54,7 @@ new (class TinkerCombo {
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_sheepstick", "item_ethereal_blade", "item_dagon", "item_shivas_guard", "item_black_king_bar", "item_bottle"],
+		["item_blink", "item_sheepstick", "item_ethereal_blade", "item_dagon", "item_shivas_guard", "item_black_king_bar", "item_glimmer_cape", "item_bottle"],
 		new Map([
 			["item_blink", true],
 			["item_sheepstick", true],
@@ -60,6 +62,7 @@ new (class TinkerCombo {
 			["item_dagon", true],
 			["item_shivas_guard", true],
 			["item_black_king_bar", true],
+			["item_glimmer_cape", true],
 			["item_bottle", true]
 		]),
 		"Toggle item usage in the combo"
@@ -91,6 +94,13 @@ new (class TinkerCombo {
 	private readonly autoFarmRearm = this.autoFarmNode.AddToggle("Auto Rearm", true)
 	private readonly autoFarmSleeper = new TickSleeper()
 	private farmKeyWasPressed = false
+
+	// Auto Farm Loop (Jungle dengan Keen Conveyance)
+	private readonly autoFarmLoopNode = this.autoFarmNode.AddNode("Farm Loop (Keen Conveyance)")
+	private readonly farmLoopEnabled = this.autoFarmLoopNode.AddToggle("Enable Farm Loop", false, "Teleport ke jungle via Keen Conveyance, farm, lalu kembali ke fountain saat mana low")
+	private readonly farmLoopLowManaPct = this.autoFarmLoopNode.AddSlider("Return Mana %", 30, 10, 90, 5, "Pulang ke fountain saat mana di bawah persentase ini")
+	private farmLoopSleeper = new TickSleeper()
+	private farmLoopState: "idle" | "teleporting_out" | "farming" | "teleporting_back" | "regenerating" = "idle"
 
 	// Auto Bottle in Fountain
 	private readonly autoBottleFountain = this.entry.AddToggle(
@@ -142,6 +152,7 @@ new (class TinkerCombo {
 		this.autoFarmSleeper.Sleep(0)
 		this.isAutoFarming = false
 		this.farmKeyWasPressed = false
+		this.farmLoopState = "idle"
 		this.pendingBottleAfterRearm = false
 		this.rearmModifierSleeper.Sleep(0)
 		this.bottleFountainSleeper.Sleep(0)
@@ -372,6 +383,34 @@ new (class TinkerCombo {
 		return !wg.IsHidden
 	}
 
+	// Glimmer Cape: self-cast saat HP rendah & belum invisible (emergency survive)
+	// NOTE: Glimmer adalah unit-target item — self-cast via CAST_TARGET ke diri sendiri
+	private tryCastGlimmer(hero: Hero, sleeper: TickSleeper): boolean {
+		if (!this.itemsSelector.IsEnabled("item_glimmer_cape") || hero.IsInvisible) return false
+		const glimmer = hero.Items.find(i => i.Name === "item_glimmer_cape")
+		if (
+			!glimmer || !glimmer.IsValid || !glimmer.CanBeUsable || hero.IsMuted ||
+			glimmer.Cooldown > 0.1 || hero.Mana < glimmer.ManaCost ||
+			hero.HasBuffByName("modifier_item_glimmer_cape_fade")
+		) {
+			return false
+		}
+		const hpPct = (hero.HP / hero.MaxHP) * 100
+		if (hpPct > 40) return false
+
+		ExecuteOrder.PrepareOrder({
+			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+			issuers: [hero],
+			target: hero.Index,
+			ability: glimmer.Index,
+			queue: false,
+			showEffects: true,
+			isPlayerInput: false
+		})
+		sleeper.Sleep(GameState.InputLag * 1000 + glimmer.CastPoint * 1000 + 100)
+		return true
+	}
+
 	// --- Spam March ---
 
 	private handleSpamMarch(hero: Hero): boolean {
@@ -397,6 +436,11 @@ new (class TinkerCombo {
 			}
 		}
 
+		// Glimmer Cape: self-cast saat HP rendah & belum invisible (emergency survive)
+		if (this.tryCastGlimmer(hero, this.spamMarchSleeper)) {
+			return true
+		}
+
 		const march = hero.GetAbilityByName("tinker_march_of_the_machines")
 		if (!march || !march.IsValid || march.Level <= 0 || march.Cooldown > 0.1 || hero.Mana < march.ManaCost) return false
 
@@ -417,21 +461,13 @@ new (class TinkerCombo {
 	}
 
 	private findJungleMarchPosition(hero: Hero): Vector3 | undefined {
-		const spawnBoxes = GameRules?.NeutralSpawnBoxes
-		if (!spawnBoxes || spawnBoxes.length === 0) return undefined
-
 		const neutralCreeps = EntityManager.GetEntitiesByClass(Creep).filter(
 			c => c.IsValid && c.IsAlive && c.IsVisible && c.IsNeutral
 		)
 
+		// Tidak ada creep hidup sama sekali — jangan return posisi (biar bisa deteksi "clear")
 		if (neutralCreeps.length === 0) {
-			let nearest: Vector3 | undefined
-			let nd = Infinity
-			for (const box of spawnBoxes) {
-				const d = hero.Distance2D(box.Center)
-				if (d < nd && d < 2500) { nd = d; nearest = box.Center }
-			}
-			return nearest
+			return undefined
 		}
 
 		const campCreeps = new Map<string, Creep[]>()
@@ -448,22 +484,46 @@ new (class TinkerCombo {
 			campCenters.set(name, new Vector3(cx / creeps.length, cy / creeps.length, cz / creeps.length))
 		}
 
+		// Prioritas 1: dua camp yang berdekatan (< 1200) — 1 March kena 2 camp
+		// Pilih pasangan camp yang TERDEKAT ke hero agar efektif
 		const names = Array.from(campCenters.keys())
+		let bestPair: Vector3 | undefined
+		let bestPairDist = Infinity
 		for (let i = 0; i < names.length; i++) {
 			for (let j = i + 1; j < names.length; j++) {
 				const a = campCenters.get(names[i])!, b = campCenters.get(names[j])!
 				if (a.Distance2D(b) < 1200) {
-					return new Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+					const mid = new Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+					const d = hero.Distance2D(mid)
+					if (d < bestPairDist) {
+						bestPairDist = d
+						bestPair = mid
+					}
 				}
 			}
 		}
+		if (bestPair) return bestPair
 
+		// Prioritas 2: camp terdekat yang masih ada creep hidup
 		let nc: Vector3 | undefined, nd = Infinity
 		for (const c of campCenters.values()) {
 			const d = hero.Distance2D(c)
 			if (d < nd) { nd = d; nc = c }
 		}
 		return nc
+	}
+
+	/** Cek apakah masih ada neutral creep hidup di sekitar posisi (radius 700) */
+	private hasNeutralCreepsNear(hero: Hero, pos: Vector3 | undefined): boolean {
+		if (pos === undefined) {
+			// Tidak ada posisi farm — cek semua neutral creep dalam jangkauan 2000
+			return EntityManager.GetEntitiesByClass(Creep).some(
+				c => c.IsValid && c.IsAlive && c.IsVisible && c.IsNeutral && hero.Distance2D(c) <= 2000
+			)
+		}
+		return EntityManager.GetEntitiesByClass(Creep).some(
+			c => c.IsValid && c.IsAlive && c.IsVisible && c.IsNeutral && c.Position.Distance2D(pos) <= 700
+		)
 	}
 
 	private findLaneMarchPosition(hero: Hero): Vector3 | undefined {
@@ -561,7 +621,193 @@ new (class TinkerCombo {
 		return hero.Position.Add(dir.Normalize().MultiplyScalar(maxRange))
 	}
 
-	// --- HUD Draw (dua panel terpisah) ---
+	// --- Auto Farm Loop (Jungle + Keen Conveyance) ---
+
+	private getKeenTeleport(hero: Hero): Ability | undefined {
+		const keen = hero.GetAbilityByName("tinker_keen_teleport")
+		return keen && keen.IsValid && keen.Level > 0 ? keen : undefined
+	}
+
+	/** Building ally yang bisa jadi target Keen Conveyance (outpost/fountain) */
+	private getKeenTarget(hero: Hero, wantFountain: boolean): Unit | undefined {
+		let best: Unit | undefined
+		let bestDist = Infinity
+		for (const ent of EntityManager.GetEntitiesByClass(Outpost)) {
+			if (!ent.IsValid || !ent.IsAlive || ent.IsEnemy(hero)) continue
+			const dist = hero.Distance2D(ent)
+			if (dist < bestDist) {
+				bestDist = dist
+				best = ent
+			}
+		}
+		if (wantFountain) {
+			// fountain sendiri via buff aura terdekat — pakai Fountain entity
+			for (const ent of EntityManager.GetEntitiesByClass(Fountain)) {
+				if (!ent.IsValid || ent.IsEnemy(hero)) continue
+				const dist = hero.Distance2D(ent)
+				if (dist < bestDist) {
+					bestDist = dist
+					best = ent
+				}
+			}
+		}
+		return best
+	}
+
+	private castKeenConveyance(hero: Hero, target: Unit): boolean {
+		const keen = this.getKeenTeleport(hero)
+		if (!keen || keen.Cooldown > 0.1 || hero.Mana < keen.ManaCost) return false
+		ExecuteOrder.PrepareOrder({
+			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+			issuers: [hero],
+			target: target.Index,
+			ability: keen.Index,
+			queue: false,
+			showEffects: true,
+			isPlayerInput: false
+		})
+		return true
+	}
+
+	private isChannelingKeen(hero: Hero): boolean {
+		if (!hero.IsChanneling) return false
+		const keen = this.getKeenTeleport(hero)
+		return keen !== undefined && keen.IsChanneling
+	}
+
+	/** Cast Keen Conveyance balik ke fountain; true kalau order dikirim */
+	private goBackToFountain(hero: Hero): boolean {
+		const fountain = this.getKeenTarget(hero, true)
+		if (!fountain) {
+			this.farmLoopState = "idle"
+			return true
+		}
+		if (this.castKeenConveyance(hero, fountain)) {
+			this.farmLoopState = "teleporting_back"
+			this.farmLoopSleeper.Sleep(1500)
+			return true
+		}
+		this.farmLoopState = "idle"
+		return true
+	}
+
+	/**
+	 * State machine farm loop:
+	 * idle → teleporting_out (keen ke outpost) → farming → teleporting_back (keen ke fountain) → regenerating → idle
+	 */
+	private handleFarmLoop(hero: Hero): boolean {
+		if (!this.farmLoopEnabled.value) {
+			this.farmLoopState = "idle"
+			return false
+		}
+		if (this.farmLoopSleeper.Sleeping) return false
+
+		const manaPct = (hero.Mana / hero.MaxMana) * 100
+
+		switch (this.farmLoopState) {
+			case "idle": {
+				// Mulai: butuh keen, di fountain, mana cukup
+				if (!this.getKeenTeleport(hero)) return false
+				if (!this.isInOwnFountain(hero)) return false
+				if (manaPct < 40) return false // tunggu regen dulu
+
+				const outpost = this.getKeenTarget(hero, false)
+				if (!outpost) return false
+				if (this.castKeenConveyance(hero, outpost)) {
+					this.farmLoopState = "teleporting_out"
+					this.farmLoopSleeper.Sleep(1500)
+				}
+				return true
+			}
+			case "teleporting_out": {
+				if (this.isChannelingKeen(hero)) return true // masih channel
+				// Channel selesai — cek apakah sudah di jungle (tidak di fountain)
+				if (!this.isInOwnFountain(hero)) {
+					this.farmLoopState = "farming"
+				} else {
+					// Kemungkinan gagal/ke fountain — kembali idle
+					this.farmLoopState = "idle"
+				}
+				return true
+			}
+			case "farming": {
+				if (manaPct <= this.farmLoopLowManaPct.value) {
+					// Mana low — pulang
+					return this.goBackToFountain(hero)
+				}
+
+				// Hitung ulang posisi farm tiap kali — kalau camp sudah clear, pindah camp / pulang
+				const farmPos = this.findJungleMarchPosition(hero)
+
+				// Kalau tidak ada camp dengan creep hidup sama sekali di sekitar → clear, pulang
+				if (farmPos === undefined) {
+					return this.goBackToFountain(hero)
+				}
+
+				// Cek: masih ada neutral creep hidup di sekitar posisi farm?
+				if (!this.hasNeutralCreepsNear(hero, farmPos)) {
+					// Camp clear — pulang, rearm, ulangi loop
+					return this.goBackToFountain(hero)
+				}
+
+				if (farmPos) {
+					if (this.autoFarmUseMarch.value) {
+						const march = hero.GetAbilityByName("tinker_march_of_the_machines")
+						if (march && march.IsValid && march.Level > 0 && march.Cooldown <= 0.1 && hero.Mana >= march.ManaCost) {
+							this.castPosition(hero, march, this.groundCastPos(hero, march, farmPos))
+							this.farmLoopSleeper.Sleep(GameState.InputLag * 1000 + march.CastPoint * 1000 + 100)
+							return true
+						}
+					}
+					if (this.autoFarmUseLaser.value) {
+						const laser = hero.GetAbilityByName("tinker_laser")
+						if (laser && laser.IsValid && laser.Level > 0 && laser.Cooldown <= 0.1) {
+							const tgt = this.findLaserFarmTarget(hero)
+							if (tgt && hero.Mana >= laser.ManaCost) {
+								this.castTarget(hero, laser, tgt as unknown as Hero)
+								this.farmLoopSleeper.Sleep(GameState.InputLag * 1000 + laser.CastPoint * 1000 + 100)
+								return true
+							}
+						}
+					}
+				}
+				return true
+			}
+			case "teleporting_back": {
+				if (this.isChannelingKeen(hero)) return true
+				// Tiba di fountain
+				this.farmLoopState = "regenerating"
+				this.farmLoopSleeper.Sleep(1000)
+				return true
+			}
+			case "regenerating": {
+				// Di fountain: rearm dulu kalau enabled supaya skill siap dipakai di jungle
+				if (this.autoFarmRearm.value && !this.isChannelingKeen(hero)) {
+					const rearm = hero.GetAbilityByName("tinker_rearm")
+					const march = hero.GetAbilityByName("tinker_march_of_the_machines")
+					const laser = hero.GetAbilityByName("tinker_laser")
+					const anyOnCd =
+						(march && march.IsValid && march.Level > 0 && march.Cooldown > 1) ||
+						(laser && laser.IsValid && laser.Level > 0 && laser.Cooldown > 1)
+					if (anyOnCd && rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost) {
+						this.castNoTarget(hero, rearm)
+						const channelDur = this.getRearmChannelDuration(hero)
+						const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
+						this.farmLoopSleeper.Sleep(totalWait)
+						this.pendingBottleAfterRearm = true
+						this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
+						return true
+					}
+				}
+				// Tunggu regen sampai mana cukup, lalu ulangi
+				if (manaPct >= 60) {
+					this.farmLoopState = "idle"
+				}
+				return true
+			}
+		}
+		return false
+	}
 
 	private drawPanel(pos: Vector2, dragFlag: { val: boolean }, lines: { text: string; size: number; weight: number; color: Color }[]): void {
 		const mousePos = InputManager.CursorOnScreen
@@ -603,6 +849,7 @@ new (class TinkerCombo {
 				{ text: comboPressed ? "Combo: ACTIVE" : "Combo: idle", size: 13, weight: 400, color: comboPressed ? Color.Green : Color.Gray },
 				{ text: spamPressed ? "Spam March: ACTIVE" : "Spam March: idle", size: 13, weight: 400, color: spamPressed ? Color.Green : Color.Gray },
 				{ text: this.isAutoFarming ? "Auto Farm: ON" : "Auto Farm: OFF", size: 13, weight: this.isAutoFarming ? 700 : 400, color: this.isAutoFarming ? Color.Green : Color.Gray },
+				{ text: `FarmLoop: ${this.farmLoopEnabled.value ? this.farmLoopState : "off"}`, size: 11, weight: 400, color: this.farmLoopEnabled.value ? Color.Aqua : Color.Gray },
 				{ text: this.getAutoBottleDebug(), size: 11, weight: 400, color: Color.LightGray },
 			]
 			this.drawPanel(this.statusHudPos, { val: this.isDraggingStatus }, statusLines)
@@ -658,6 +905,9 @@ new (class TinkerCombo {
 		this.handleAutoFarmToggle()
 		if (this.handleAutoFarm(hero)) return
 
+		// Farm Loop (Keen Conveyance) — berjalan saat auto farm aktif
+		if (this.isAutoFarming && this.handleFarmLoop(hero)) return
+
 		// @ts-ignore
 		if (!this.comboKey.isPressed) return
 
@@ -693,6 +943,11 @@ new (class TinkerCombo {
 					return
 				}
 			}
+		}
+
+		// Glimmer Cape: self-cast saat HP rendah & belum invisible (emergency survive)
+		if (this.tryCastGlimmer(hero, this.sleeper)) {
+			return
 		}
 
 		if (!isImmune) {
