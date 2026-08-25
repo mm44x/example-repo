@@ -272,18 +272,32 @@ new (class InvokerCombo {
 	}
 
 	private hasScepter(hero: Hero): boolean {
-		return (
-			hero.HasBuffByName("modifier_item_ultimate_scepter") ||
-			hero.HasBuffByName("modifier_item_ultimate_scepter_consumed")
-		)
+		return hero.HasScepter || hero.HasItemInInventory("item_ultimate_scepter_2")
+	}
+
+	private getActiveIceWallAbility(hero: Hero): Ability | undefined {
+		const ad = hero.GetAbilityByName("invoker_ice_wall_ad")
+		if (ad && ad.IsValid && !ad.IsHidden) {
+			return ad
+		}
+		const base = hero.GetAbilityByName("invoker_ice_wall")
+		return base && base.IsValid ? base : undefined
 	}
 
 	private isIceWallUpgraded(hero: Hero): boolean {
-		return this.hasScepter(hero) && this.scepterUpgrade.SelectedID === 1
+		if (this.scepterUpgrade.SelectedID === 1 && this.hasScepter(hero)) {
+			return true
+		}
+		const ad = hero.GetAbilityByName("invoker_ice_wall_ad")
+		return ad !== undefined && ad.IsValid && !ad.IsHidden && ad.Level > 0
 	}
 
 	private isSunStrikeUpgraded(hero: Hero): boolean {
 		return this.hasScepter(hero) && this.scepterUpgrade.SelectedID === 0
+	}
+
+	private isIceWallName(name: string): boolean {
+		return name === "invoker_ice_wall" || name === "invoker_ice_wall_ad"
 	}
 
 	private angleDifference(a: number, b: number): number {
@@ -291,6 +305,26 @@ new (class InvokerCombo {
 		while (diff < -Math.PI) diff += Math.PI * 2
 		while (diff > Math.PI) diff -= Math.PI * 2
 		return diff
+	}
+
+	// Ice Floe (Quas Aghanim) is vector targeted: first click = center, drag = direction of the floe trail
+	private getIceWallCastPoints(hero: Hero, target: Hero): { origin: Vector3; end: Vector3 } {
+		const floeDelay = 1.3
+		const trailLength = 600
+
+		// Predict where the target will be when the floe forms
+		let origin = target.Position.Clone()
+		if (target.IsMoving) {
+			const speed = target.MoveSpeed > 0 ? target.MoveSpeed : 350
+			origin = origin.Add(target.Forward.MultiplyScalar(speed * floeDelay))
+		}
+
+		let direction = target.IsMoving
+			? target.Forward.Clone()
+			: origin.Subtract(hero.Position).Normalize()
+
+		const end = origin.Add(direction.MultiplyScalar(trailLength))
+		return { origin, end }
 	}
 
 	private executeComboAbility(
@@ -499,14 +533,15 @@ new (class InvokerCombo {
 				return false
 			}
 
-			if (name === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
-				const triggerTime = 0.5 + castPoint + delayBuffer
+			if (this.isIceWallName(name) && this.isIceWallUpgraded(hero)) {
+				// Ice Floe forms 1.3s after cast — time it so the trail covers the landing spot
+				const triggerTime = 1.3 + castPoint + delayBuffer
 				if (rem <= triggerTime) {
-					if (this.executeComboAbility(hero, ability, target, true, target.Position)) {
-						console.log("[InvokerCombo] Timed Upgraded Ice Wall casted under lifted target!")
-						this.sleeper.Sleep(delayBuffer * 1000 + castPoint * 1000 + 100)
-						return true
-					}
+					const { origin, end } = this.getIceWallCastPoints(hero, target)
+					hero.CastVectorTargetPosition(ability, origin, end)
+					console.log("[InvokerCombo] Timed Ice Floe casted under lifted target!")
+					this.sleeper.Sleep(delayBuffer * 1000 + castPoint * 1000 + 150)
+					return true
 				}
 				return false
 			}
@@ -565,46 +600,16 @@ new (class InvokerCombo {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 				return true
 			}
-		} else if (name === "invoker_ice_wall") {
-			const upgraded = this.isIceWallUpgraded(hero)
-			if (upgraded) {
-				const isVector = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
-				if (isVector) {
-					const startPos = target.Position.Clone()
-					const toTarget = target.Position.Subtract(hero.Position)
-					const perp = new Vector3(-toTarget.y, toTarget.x, 0).Normalize()
-					const endPos = startPos.Add(perp.MultiplyScalar(100))
-
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_VECTOR_TARGET_POSITION,
-						issuers: [hero],
-						ability: ability.Index,
-						position: endPos,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: startPos,
-						ability: ability.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-
-					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 150)
-					return true
-				} else {
-					// Point-targeted ground spell (like Anti-Mage Blink)
-					if (this.executeComboAbility(hero, ability, target, true, target.Position)) {
-						this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-						return true
-					}
-				}
+		} else if (this.isIceWallName(name)) {
+			if (this.isIceWallUpgraded(hero)) {
+				// Ice Floe (Quas Aghanim): vector targeted
+				const { origin, end } = this.getIceWallCastPoints(hero, target)
+				hero.CastVectorTargetPosition(ability, origin, end)
+				console.log("[InvokerCombo] Ice Floe casted!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 150)
+				return true
 			} else {
+				// Vanilla Ice Wall: no target, spawns perpendicular wall in front of hero
 				const dist = hero.Distance2D(target)
 				if (dist <= 520) {
 					const toTarget = target.Position.Subtract(hero.Position)
@@ -707,7 +712,10 @@ new (class InvokerCombo {
 					continue
 				}
 
-				const ability = hero.GetAbilityByName(spellName)
+				let ability = hero.GetAbilityByName(spellName)
+				if (spellName === "invoker_ice_wall") {
+					ability = this.getActiveIceWallAbility(hero)
+				}
 				if (!ability || !ability.IsValid || ability.Level <= 0) {
 					continue
 				}
@@ -802,16 +810,22 @@ new (class InvokerCombo {
 
 				// Point-targeted spell
 				{
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: cursorPos,
-						ability: ability.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
+					if (spellName === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
+						const end = cursorPos.Extend(hero.Position, 600)
+						hero.CastVectorTargetPosition(ability, cursorPos, end)
+						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} as vector at cursor`)
+					} else {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+							issuers: [hero],
+							position: cursorPos,
+							ability: ability.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
+					}
 					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 					this.pendingAutoSkill = null
 					this.autoSkillCursorPos = null
@@ -823,7 +837,10 @@ new (class InvokerCombo {
 
 		// --- Pending Auto Skill Cast ---
 		if (this.pendingAutoSkill && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
-			const ability = hero.GetAbilityByName(this.pendingAutoSkill)
+			let ability = hero.GetAbilityByName(this.pendingAutoSkill)
+			if (this.pendingAutoSkill === "invoker_ice_wall") {
+				ability = this.getActiveIceWallAbility(hero)
+			}
 			if (ability && ability.IsValid && !ability.IsHidden && ability.Cooldown <= 0.1 && hero.Mana >= ability.ManaCost) {
 				const cursorPos = this.autoSkillCursorPos ?? InputManager.CursorOnWorld
 
@@ -868,16 +885,22 @@ new (class InvokerCombo {
 						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} on target`)
 					}
 				} else {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-						issuers: [hero],
-						position: cursorPos,
-						ability: ability.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} at cursor`)
+					if (this.pendingAutoSkill === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
+						const end = cursorPos.Extend(hero.Position, 600)
+						hero.CastVectorTargetPosition(ability, cursorPos, end)
+						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} as vector at cursor`)
+					} else {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+							issuers: [hero],
+							position: cursorPos,
+							ability: ability.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} at cursor`)
+					}
 				}
 
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
@@ -1330,7 +1353,10 @@ new (class InvokerCombo {
 				continue
 			}
 
-			const ability = hero.GetAbilityByName(spellName)
+			let ability = hero.GetAbilityByName(spellName)
+			if (spellName === "invoker_ice_wall") {
+				ability = this.getActiveIceWallAbility(hero)
+			}
 			if (!ability || !ability.IsValid || ability.Level <= 0) {
 				continue
 			}
@@ -1348,7 +1374,7 @@ new (class InvokerCombo {
 			}
 
 			let castRange = ability.CastRange > 0 ? ability.CastRange : 800
-			if (spellName === "invoker_ice_wall") {
+			if (spellName === "invoker_ice_wall" && !this.isIceWallUpgraded(hero)) {
 				castRange = 520
 			}
 			if (hero.Distance2D(bestTarget) > castRange) {

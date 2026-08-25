@@ -115,56 +115,58 @@ new (class PugnaCombo {
 
 	// --- Cast helpers ---
 
-	private castNoTarget(issuer: Hero, ability: Ability): void {
+	private castNoTarget(issuer: Hero, ability: Ability, queue = false): void {
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 			issuers: [issuer],
 			ability: ability.Index,
-			queue: false,
+			queue,
 			showEffects: true,
 			isPlayerInput: false
 		})
 	}
 
-	private castTarget(issuer: Hero, ability: Ability, target: Unit): void {
+	private castTarget(issuer: Hero, ability: Ability, target: Unit, queue = false): void {
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 			issuers: [issuer],
 			target: target.Index,
 			ability: ability.Index,
-			queue: false,
+			queue,
 			showEffects: true,
 			isPlayerInput: false
 		})
 	}
 
-	private castPosition(issuer: Hero, ability: Ability, pos: Vector3): void {
+	private castPosition(issuer: Hero, ability: Ability, pos: Vector3, queue = false): void {
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 			issuers: [issuer],
 			position: pos,
 			ability: ability.Index,
-			queue: false,
+			queue,
 			showEffects: true,
 			isPlayerInput: false
 		})
 	}
 
-	private sleepAfterCast(ability: Ability): void {
-		this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+	private sleepAfterCast(_ability: Ability): void {
+		// Jeda pendek antar order — cukup untuk memisahkan order,
+		// tidak menunggu CastPoint penuh (guard IsInAbilityPhase yang menunggu cast selesai)
+		this.sleeper.Sleep(GameState.InputLag * 1000 + 150)
 	}
 
 	// --- Item casting ---
 
-	private tryCastItem(hero: Hero, itemName: string, target: Unit): Ability | undefined {
+	private tryCastItem(hero: Hero, itemName: string, target: Unit, queue = false): Ability | undefined {
 		const item = hero.Items.find(i => i.Name === itemName)
 		if (item && item.IsValid && item.CanBeUsable && !hero.IsMuted && hero.Mana >= item.ManaCost && item.Cooldown <= 0.1) {
 			if (item.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
-				this.castTarget(hero, item, target)
+				this.castTarget(hero, item, target, queue)
 				return item
 			}
 			if (item.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)) {
-				this.castNoTarget(hero, item)
+				this.castNoTarget(hero, item, queue)
 				return item
 			}
 		}
@@ -360,9 +362,21 @@ new (class PugnaCombo {
 				{ text: comboPressed ? "Combo: ACTIVE" : "Combo: idle", size: 13, weight: 400, color: comboPressed ? Color.Green : Color.Gray },
 				{ text: spamPressed ? "Spam Blast: ACTIVE" : "Spam Blast: idle", size: 13, weight: 400, color: spamPressed ? Color.Green : Color.Gray },
 				{ text: healPressed ? "Heal Ally: ACTIVE" : "Heal Ally: idle", size: 13, weight: 400, color: healPressed ? Color.Green : Color.Gray },
+				{ text: this.getSpellDebug(), size: 11, weight: 400, color: Color.LightGray },
 			]
 			this.drawPanel(this.statusHudPos, { val: this.isDraggingStatus }, statusLines)
 		}
+	}
+
+	private getSpellDebug(): string {
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid) return "Spells: no hero"
+		const parts = COMBO_SPELLS.map(name => {
+			const ab = hero.GetAbilityByName(name)
+			if (!ab || !ab.IsValid || ab.Level <= 0) return `${name.split("_")[2]}=no`
+			return `${name.split("_")[2]}=${this.comboSequenceGrid?.IsEnabled(name) ? "on" : "off"}/${ab.Cooldown.toFixed(1)}s`
+		})
+		return "Spells: " + parts.join(" ")
 	}
 
 	// --- Main Loop ---
@@ -385,20 +399,26 @@ new (class PugnaCombo {
 
 		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced) return
 
-		// If channeling Life Drain, let it continue (don't interrupt)
-		if (hero.IsChanneling) {
-			// Auto re-cast if channel broke unexpectedly
+		// Drain berjalan: semua order berikutnya di-QUEUE supaya tidak memutus channel.
+		// (kecuali walking — itu memang memutus drain dan itu normal)
+		const isDraining = hero.IsChanneling
+		if (isDraining) {
+			// Auto re-cast kalau channel putus
 			this.handleLifeDrainRecast(hero)
-			return
 		}
+		const queued = isDraining
+
+		// Masih dalam fase cast (cast point) — tunggu selesai sebelum order berikutnya,
+		// supaya order baru tidak membatalkan cast yang sedang berlangsung
+		if (!queued && hero.IsInAbilityPhase) return
 
 		const bestTarget = this.findBestTarget(hero)
 		if (!bestTarget) return
 
 		const distToTarget = hero.Distance2D(bestTarget)
 
-		// Auto blink
-		if (distToTarget > 800) {
+		// Auto blink — tidak saat drain (blink = gerakan, memutus channel)
+		if (!queued && distToTarget > 800) {
 			if (this.doBlink(hero, bestTarget.Position)) return
 		}
 
@@ -406,47 +426,19 @@ new (class PugnaCombo {
 
 		const isImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
-		// --- Items ---
+		// --- Disable items (duluan, biar target diam) ---
 		if (!isImmune) {
 			if (this.itemsSelector.IsEnabled("item_sheepstick") && distToTarget <= 600) {
-				const hex = this.tryCastItem(hero, "item_sheepstick", bestTarget)
-				if (hex) { this.sleeper.Sleep(GameState.InputLag * 1000 + hex.CastPoint * 1000 + 100); return }
-			}
-			if (this.itemsSelector.IsEnabled("item_veil_of_discord") && distToTarget <= 700) {
-				const veil = this.tryCastItem(hero, "item_veil_of_discord", bestTarget)
-				if (veil) { this.sleeper.Sleep(GameState.InputLag * 1000 + veil.CastPoint * 1000 + 100); return }
+				const hex = this.tryCastItem(hero, "item_sheepstick", bestTarget, queued)
+				if (hex) { this.sleeper.Sleep(GameState.InputLag * 1000 + 150); return }
 			}
 			if (this.itemsSelector.IsEnabled("item_cyclone") && distToTarget <= 650) {
-				const eul = this.tryCastItem(hero, "item_cyclone", bestTarget)
-				if (eul) { this.sleeper.Sleep(GameState.InputLag * 1000 + eul.CastPoint * 1000 + 100); return }
-			}
-			if (this.itemsSelector.IsEnabled("item_ethereal_blade") && distToTarget <= 800) {
-				const eth = this.tryCastItem(hero, "item_ethereal_blade", bestTarget)
-				if (eth) { this.sleeper.Sleep(GameState.InputLag * 1000 + eth.CastPoint * 1000 + 100); return }
-			}
-			if (this.itemsSelector.IsEnabled("item_dagon")) {
-				const dagon = this.getDagonItem(hero)
-				if (dagon && dagon.IsValid && dagon.CanBeUsable && hero.Mana >= dagon.ManaCost && dagon.Cooldown <= 0.1) {
-					const r = dagon.CastRange > 0 ? dagon.CastRange : 800
-					if (distToTarget <= r) { this.castTarget(hero, dagon, bestTarget); this.sleeper.Sleep(GameState.InputLag * 1000 + dagon.CastPoint * 1000 + 100); return }
-				}
+				const eul = this.tryCastItem(hero, "item_cyclone", bestTarget, queued)
+				if (eul) { this.sleeper.Sleep(GameState.InputLag * 1000 + 150); return }
 			}
 		}
 
-		// Glimmer Cape — self-cast saat low HP (emergency, bukan bagian isImmune)
-		if (this.itemsSelector.IsEnabled("item_glimmer_cape")) {
-			const hpPct = (hero.HP / hero.MaxHP) * 100
-			if (hpPct < 40) {
-				const glimmer = hero.Items.find(i => i.Name === "item_glimmer_cape")
-				if (glimmer && glimmer.IsValid && glimmer.CanBeUsable && !hero.IsMuted && glimmer.Cooldown <= 0.1 && hero.Mana >= glimmer.ManaCost) {
-					this.castTarget(hero, glimmer, hero)
-					this.sleeper.Sleep(GameState.InputLag * 1000 + glimmer.CastPoint * 1000 + 100)
-					return
-				}
-			}
-		}
-
-		// --- Spell Combo (DynamicImageSelector order) ---
+		// --- Spell Combo (DynamicImageSelector order) — sebelum damage items biar skill inti selalu keluar ---
 		for (const spellName of this.comboSequenceGrid.values) {
 			if (!this.comboSequenceGrid.IsEnabled(spellName)) continue
 
@@ -458,7 +450,7 @@ new (class PugnaCombo {
 				case "pugna_nether_blast": {
 					// Point target: cast at max range towards enemy (delay 0.9s)
 					const castPos = this.clampToCastRange(hero, ability, bestTarget.Position)
-					this.castPosition(hero, ability, castPos)
+					this.castPosition(hero, ability, castPos, queued)
 					this.sleepAfterCast(ability)
 					return
 				}
@@ -466,14 +458,14 @@ new (class PugnaCombo {
 					if (isImmune) continue
 					const castRange = ability.CastRange > 0 ? ability.CastRange : 600
 					if (distToTarget > castRange) continue
-					this.castTarget(hero, ability, bestTarget)
+					this.castTarget(hero, ability, bestTarget, queued)
 					this.sleepAfterCast(ability)
 					return
 				}
 				case "pugna_nether_ward": {
 					// Place ward between hero and target (or at target)
 					const castPos = this.clampToCastRange(hero, ability, bestTarget.Position)
-					this.castPosition(hero, ability, castPos)
+					this.castPosition(hero, ability, castPos, queued)
 					this.sleepAfterCast(ability)
 					return
 				}
@@ -481,7 +473,7 @@ new (class PugnaCombo {
 					if (isImmune) continue
 					const castRange = ability.CastRange > 0 ? ability.CastRange : 600
 					if (distToTarget > castRange) continue
-					this.castTarget(hero, ability, bestTarget)
+					this.castTarget(hero, ability, bestTarget, queued)
 					const channelTime = ability.CastPoint > 0 ? ability.CastPoint : 0.3
 					this.sleeper.Sleep(GameState.InputLag * 1000 + channelTime * 1000 + 200)
 					return
@@ -489,12 +481,46 @@ new (class PugnaCombo {
 			}
 		}
 
-		// Fallback orbwalk
-		executeOrbwalk(hero, bestTarget, this.sleeper, {
-			enabled: this.smartOrbWalkEnabled.value,
-			safeDistancePct: this.smartOrbWalkDistancePct.value,
-			stopToCancel: this.smartOrbWalkStopCancel.value
-		})
+		// --- Damage items (setelah skill, biar skill inti tidak tertahan) ---
+		if (!isImmune) {
+			if (this.itemsSelector.IsEnabled("item_veil_of_discord") && distToTarget <= 700) {
+				const veil = this.tryCastItem(hero, "item_veil_of_discord", bestTarget, queued)
+				if (veil) { this.sleeper.Sleep(GameState.InputLag * 1000 + 150); return }
+			}
+			if (this.itemsSelector.IsEnabled("item_ethereal_blade") && distToTarget <= 800) {
+				const eth = this.tryCastItem(hero, "item_ethereal_blade", bestTarget, queued)
+				if (eth) { this.sleeper.Sleep(GameState.InputLag * 1000 + 150); return }
+			}
+			if (this.itemsSelector.IsEnabled("item_dagon")) {
+				const dagon = this.getDagonItem(hero)
+				if (dagon && dagon.IsValid && dagon.CanBeUsable && hero.Mana >= dagon.ManaCost && dagon.Cooldown <= 0.1) {
+					const r = dagon.CastRange > 0 ? dagon.CastRange : 800
+					if (distToTarget <= r) { this.castTarget(hero, dagon, bestTarget, queued); this.sleeper.Sleep(GameState.InputLag * 1000 + 150); return }
+				}
+			}
+		}
+
+		// Glimmer Cape — self-cast saat low HP (emergency, bukan bagian isImmune)
+		if (this.itemsSelector.IsEnabled("item_glimmer_cape")) {
+			const hpPct = (hero.HP / hero.MaxHP) * 100
+			if (hpPct < 40) {
+				const glimmer = hero.Items.find(i => i.Name === "item_glimmer_cape")
+				if (glimmer && glimmer.IsValid && glimmer.CanBeUsable && !hero.IsMuted && glimmer.Cooldown <= 0.1 && hero.Mana >= glimmer.ManaCost) {
+					this.castTarget(hero, glimmer, hero, queued)
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 150)
+					return
+				}
+			}
+		}
+
+		// Fallback orbwalk — skip saat drain (move order memutus channel)
+		if (!queued) {
+			executeOrbwalk(hero, bestTarget, this.sleeper, {
+				enabled: this.smartOrbWalkEnabled.value,
+				safeDistancePct: this.smartOrbWalkDistancePct.value,
+				stopToCancel: this.smartOrbWalkStopCancel.value
+			})
+		}
 	}
 
 	private findBestTarget(hero: Hero): Hero | undefined {
