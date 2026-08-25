@@ -3,6 +3,7 @@ import "./rubick_combo"
 import "./last_hit"
 import "./armlet_abuse"
 import "./anti_initiation"
+import "./auto_dust"
 import "./auto_save"
 import "./auto_dodger"
 import "./visage_combo"
@@ -12,7 +13,6 @@ import "./invoker_combo"
 import "./tinker_combo"
 import "./pugna_combo"
 import "./puck_combo"
-
 
 import {
 	Attributes,
