@@ -13,6 +13,7 @@ import "./invoker_combo"
 import "./tinker_combo"
 import "./pugna_combo"
 import "./puck_combo"
+import "./zeus_combo"
 
 import {
 	Attributes,
