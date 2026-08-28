@@ -153,7 +153,6 @@ new (class AutoBanUtility {
 
 		// 3. Fallback for Turbo mode
 		if (gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_TURBO) {
-			// In Turbo mode, if pick rules haven't entered Pick phase (1), it's Ban phase
 			return TurboHeroPickRules?.Phase !== DOTACustomHeroPickRulesPhase.Pick
 		}
 
@@ -184,7 +183,6 @@ new (class AutoBanUtility {
 
 		const state = GameRules?.GameState
 		if (this.isSelectionState(state)) {
-			// Keep native ban hook synchronized
 			this.syncNativeBans()
 			this.updateDebugInfo()
 
@@ -225,9 +223,6 @@ new (class AutoBanUtility {
 		return bannedHeroIds
 	}
 
-	/**
-	 * Synchronizes the target ban list with the native C++ engine core.
-	 */
 	private syncNativeBans(): void {
 		if (!this.enabled.value) {
 			ToggleBanHeroes(false)
@@ -266,35 +261,76 @@ new (class AutoBanUtility {
 		}
 
 		const now = Date.now()
-		if (now - this.lastBanAttemptTime < 350) {
+		if (now - this.lastBanAttemptTime < 300) {
 			return
 		}
 
-		// Re-assert native core hook with available target IDs
+		// Vector 1: Re-assert native core hook
 		ToggleBanHeroes(availableIds)
 
 		const strategy = this.banStrategy.SelectedID
 		let targetIds: number[] = []
 
 		if (strategy === 0) {
-			// Ban First Available
 			targetIds = [availableIds[0]]
 		} else if (strategy === 1) {
-			// Ban All Selected (Turbo Mode sends all selected candidates)
 			targetIds = availableIds
 		} else if (strategy === 2) {
-			// Random From Selected
 			const randomIndex = Math.floor(Math.random() * availableIds.length)
 			targetIds = [availableIds[randomIndex]]
 		}
 
-		// Multi-vector execution across Game Coordinator, Panorama UI, and Custom Game Events
+		// Find Panorama Root Panel
+		let rootPanel: any
+		try {
+			if (typeof Panorama !== "undefined" && Panorama) {
+				rootPanel = Panorama.FindRootPanel("DotaDashboard") ?? Panorama.FindRootPanel("DotaHud")
+			}
+		} catch {
+			// ignore
+		}
+
 		for (const id of targetIds) {
 			const heroName = UnitData.GetHeroNameByID(id)
 
-			// Vector 1: Native C++ core hook is active via ToggleBanHeroes
+			// Vector 2: Panorama ExecuteScript (Runs directly inside Dota 2 UI thread)
+			try {
+				if (typeof Panorama !== "undefined" && Panorama && rootPanel) {
+					Panorama.ExecuteScript(
+						rootPanel,
+						`try {
+							$.DispatchEvent('DOTACustomHeroPickRulesHeroBanned', ${id});
+							$.DispatchEvent('DOTAHeroSelected', ${id}, true);
+							$.DispatchEvent('DOTAPickHero', ${id}, true);
+							$.DispatchEvent('DOTABanHero', ${id});
+							$.DispatchEvent('DOTAHeroSelectionBanHero', ${id});
+							$.DispatchEvent('DOTASuggestHero', ${id}, true);
+							if (typeof GameEvents !== 'undefined' && GameEvents) {
+								GameEvents.SendCustomGameEventToServer('dota_hero_ban', { hero_id: ${id} });
+								GameEvents.SendCustomGameEventToServer('custom_hero_pick_rules_hero_banned', { hero_id: ${id} });
+								GameEvents.SendCustomGameEventToServer('turbo_hero_banned', { hero_id: ${id} });
+							}
+						} catch(e) {}`
+					)
+				}
+			} catch {
+				// ignore
+			}
 
-			// Vector 2: CustomGameEvents server events
+			// Vector 3: Panorama.DispatchEventAsync with exact JS invocation syntax
+			try {
+				if (typeof Panorama !== "undefined" && Panorama) {
+					Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesHeroBanned(${id})`, rootPanel, 0)
+					Panorama.DispatchEventAsync(`DOTAHeroSelected(${id}, true)`, rootPanel, 0)
+					Panorama.DispatchEventAsync(`DOTABanHero(${id})`, rootPanel, 0)
+					Panorama.DispatchEventAsync(`DOTAPickHero(${id}, true)`, rootPanel, 0)
+					Panorama.DispatchEventAsync(`DOTASuggestHero(${id}, true)`, rootPanel, 0)
+				}
+			} catch {
+				// ignore
+			}
+
+			// Vector 4: CustomGameEvents server fire
 			try {
 				if (typeof CustomGameEvents !== "undefined" && CustomGameEvents) {
 					const eventMap = new Map<string, any>()
@@ -308,20 +344,10 @@ new (class AutoBanUtility {
 					CustomGameEvents.FireEventToServer("turbo_hero_banned", banEvent)
 				}
 			} catch {
-				// Ignore if not supported in current context
+				// ignore
 			}
 
-			// Vector 3: Panorama UI event dispatch
-			try {
-				if (typeof Panorama !== "undefined" && Panorama) {
-					Panorama.DispatchEventAsync("DOTACustomHeroPickRulesHeroBanned", undefined, 0)
-					Panorama.DispatchEventAsync("DOTAHeroSelected", undefined, 0)
-				}
-			} catch {
-				// Ignore if not supported in current context
-			}
-
-			// Vector 4: Console command triggers
+			// Vector 5: Console Command triggers
 			if (heroName) {
 				GameState.ExecuteCommand(`dota_select_hero ${heroName}`)
 			}
@@ -332,7 +358,7 @@ new (class AutoBanUtility {
 		this.debugStatus = `Banning [${targetIds
 			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
 			.join(", ")}] (Attempt #${this.banAttemptCount})`
-		this.sleeper.Sleep(400)
+		this.sleeper.Sleep(350)
 	}
 
 	private updateDebugInfo(): void {
