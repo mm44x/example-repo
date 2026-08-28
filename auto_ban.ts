@@ -74,11 +74,13 @@ new (class AutoBanUtility {
 			return
 		}
 
-		const padX = 10
-		const padY = 8
-		const textH = RendererSDK.DefaultTextSize
-		const x = 50,
-			y = 200
+		const padX = 12
+		const padY = 10
+		const lineSpacing = 4
+		const fontSize = RendererSDK.DefaultTextSize
+		const textH = fontSize + lineSpacing
+		const x = 50
+		const y = 200
 
 		const allText = [...this.debugLines]
 		if (this.debugStatus) {
@@ -87,21 +89,22 @@ new (class AutoBanUtility {
 
 		let maxW = 0
 		for (const line of allText) {
-			const sz = RendererSDK.GetTextSize(line, RendererSDK.DefaultFontName, RendererSDK.DefaultTextSize)
+			const sz = RendererSDK.GetTextSize(line, RendererSDK.DefaultFontName, fontSize)
 			if (sz.x > maxW) {
 				maxW = sz.x
 			}
 		}
 
-		const rectW = Math.max(maxW + padX * 2, 280)
+		const rectW = maxW + padX * 2
 		const rectH = allText.length * textH + padY * 2
 
-		RendererSDK.FilledRect(new Vector2(x - padX, y - padY), new Vector2(rectW, rectH), new Color(0, 0, 0, 220))
+		// Solid 100% opaque background (no transparency)
+		RendererSDK.FilledRect(new Vector2(x - padX, y - padY), new Vector2(rectW, rectH), new Color(15, 18, 24, 255))
 		RendererSDK.OutlinedRect(
 			new Vector2(x - padX, y - padY),
 			new Vector2(rectW, rectH),
 			1.5,
-			new Color(255, 60, 60, 220)
+			new Color(255, 60, 60, 255)
 		)
 
 		let ly = y
