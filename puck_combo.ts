@@ -47,10 +47,26 @@ new (class PuckCombo {
 
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Puck combo script")
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Puck combo")
-	private readonly clearCreepKey = this.entry.AddKeybind(
+
+	// Wave Clear & Escape Settings (Key 1)
+	private readonly clearCreepNode = this.entry.AddNode("Wave Clear & Escape (Key 1)")
+	private readonly clearCreepKey = this.clearCreepNode.AddKeybind(
 		"Clear Creep & Escape Key",
 		"1",
-		"Hold to clear creep wave with Waning Rift and escape with Illusory Orb"
+		"Hold to clear creep wave with Waning Rift and escape with Illusory Orb + Auto-Jaunt"
+	)
+	private readonly maxOrbDistance = this.clearCreepNode.AddSlider(
+		"Max Orb Travel Distance",
+		1950,
+		1000,
+		1950,
+		50,
+		"Maximum distance the escape Illusory Orb will travel towards safe fountain direction"
+	)
+	private readonly autoJauntOnMax = this.clearCreepNode.AddToggle(
+		"Auto-Jaunt on Max Distance",
+		true,
+		"Automatically cast Ethereal Jaunt to the escape orb when holding the key"
 	)
 
 	private readonly lockTargetEnabled = this.entry.AddToggle(
@@ -111,6 +127,7 @@ new (class PuckCombo {
 
 	private comboSequenceGrid: any
 	private lockedTarget: Hero | undefined = undefined
+	private escapeOrbCastTime = 0
 
 	private readonly sleeper = new TickSleeper()
 	private readonly pSDK = new ParticlesSDK()
@@ -133,6 +150,7 @@ new (class PuckCombo {
 	private onGameEnded(): void {
 		this.sleeper.Sleep(0)
 		this.lockedTarget = undefined
+		this.escapeOrbCastTime = 0
 		this.pSDK.DestroyAll()
 	}
 
@@ -195,11 +213,18 @@ new (class PuckCombo {
 
 		if (!isHeroCombo && !isCreepCombo) {
 			this.lockedTarget = undefined
+			this.escapeOrbCastTime = 0
 			this.pSDK.DestroyByKey("puck_locked_target")
 			return
 		}
 
-		// Don't act while phase-shifted or disabled
+		// Handle Clear Creep & Escape combo (including Phase Shift & Auto-Jaunt)
+		if (isCreepCombo) {
+			this.executeClearCreepCombo(hero)
+			return
+		}
+
+		// Hero Combo: Don't act while phase-shifted, channeling, or disabled
 		if (
 			hero.IsChanneling ||
 			hero.IsStunned ||
@@ -207,11 +232,6 @@ new (class PuckCombo {
 			hero.IsHexed ||
 			hero.HasBuffByName("modifier_puck_phase_shift")
 		) {
-			return
-		}
-
-		if (isCreepCombo) {
-			this.executeClearCreepCombo(hero)
 			return
 		}
 
@@ -636,7 +656,6 @@ new (class PuckCombo {
 			if (entryName === "puck_waning_rift") {
 				const rift = hero.GetAbilityByName("puck_waning_rift")
 				if (rift && rift.IsValid && rift.Level > 0 && rift.Cooldown <= 0.1 && hero.Mana >= rift.ManaCost) {
-					// Modern Waning Rift is a 400 range leap
 					const maxLeapDist = 400
 					const dir = bestTarget.Position.Subtract(hero.Position).Normalize()
 					const leapDist = Math.min(targetDist, maxLeapDist)
@@ -711,9 +730,47 @@ new (class PuckCombo {
 	}
 
 	/**
-	 * Clear Creep Wave & Instant Escape Routine
+	 * Clear Creep Wave & Instant Escape Routine with Max Distance Orb & Auto Jaunt
 	 */
 	private executeClearCreepCombo(hero: Hero): void {
+		const isPhaseShifted = hero.HasBuffByName("modifier_puck_phase_shift")
+		const jaunt = hero.GetAbilityByName("puck_ethereal_jaunt")
+		const isJauntReady = Boolean(
+			jaunt && jaunt.IsValid && !jaunt.IsHidden && jaunt.Level > 0 && jaunt.Cooldown <= 0.1
+		)
+
+		// 5. AUTO JAUNT: If inside Phase Shift and holding key 1, auto jaunt when Orb reaches max distance or right before Phase Shift ends
+		if (isPhaseShifted && isJauntReady && jaunt) {
+			const phaseBuff = hero.GetBuffByName("modifier_puck_phase_shift")
+			const remainingPhaseTime = phaseBuff ? phaseBuff.RemainingTime : 0
+			const orbTravelTime = GameState.RawServerTime - this.escapeOrbCastTime
+			const maxOrbTravelDuration = this.maxOrbDistance.value / 651 // e.g. 1950 / 651 ≈ 3.0s
+
+			if (
+				this.autoJauntOnMax.value &&
+				(orbTravelTime >= maxOrbTravelDuration - 0.25 || remainingPhaseTime <= 0.2)
+			) {
+				this.executeOrderAndClaim(
+					{
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+						issuers: [hero],
+						ability: jaunt.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					},
+					GameState.InputLag * 1000 + 100
+				)
+				this.escapeOrbCastTime = 0
+				return
+			}
+			return
+		}
+
+		if (isPhaseShifted || hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed) {
+			return
+		}
+
 		if (this.sleeper.Sleeping) {
 			return
 		}
@@ -756,7 +813,7 @@ new (class PuckCombo {
 			return
 		}
 
-		// 3. Illusory Orb back towards friendly fountain
+		// 3. Illusory Orb back towards friendly fountain at MAX DISTANCE
 		const orb = hero.GetAbilityByName("puck_illusory_orb")
 		if (orb && orb.IsValid && orb.Level > 0 && orb.Cooldown <= 0.1 && hero.Mana >= orb.ManaCost) {
 			const friendlyFountain = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
@@ -767,21 +824,23 @@ new (class PuckCombo {
 				: new Vector3(7400, 7300, 512)
 
 			const dir = fountainPos.Subtract(hero.Position).Normalize()
-			const castPos = hero.Position.Add(dir.MultiplyScalar(500))
+			const castDist = this.maxOrbDistance.value
+			const castPos = hero.Position.Add(dir.MultiplyScalar(castDist))
 
 			const isVector = orb.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
 			if (isVector) {
-				const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
+				const curveEndPos = hero.Position.Add(dir.MultiplyScalar(castDist))
 				hero.CastVectorTargetPosition(orb, castPos, curveEndPos)
 			} else {
 				hero.CastPosition(orb, castPos)
 			}
 			claimOrder()
+			this.escapeOrbCastTime = GameState.RawServerTime
 			this.sleeper.Sleep(delay + orb.CastPoint * 1000)
 			return
 		}
 
-		// 4. Phase Shift
+		// 4. Phase Shift immediately
 		const phase = hero.GetAbilityByName("puck_phase_shift")
 		if (phase && phase.IsValid && phase.Level > 0 && phase.Cooldown <= 0.1 && hero.Mana >= phase.ManaCost) {
 			this.executeOrderAndClaim(
@@ -827,6 +886,12 @@ new (class PuckCombo {
 			{
 				text: `  Dream Coil: ${hero.GetAbilityByName("puck_dream_coil")?.Cooldown.toFixed(1) ?? "0"}s`,
 				color: (hero.GetAbilityByName("puck_dream_coil")?.Cooldown ?? 0) <= 0.1 ? Color.Green : Color.Red
+			},
+			{
+				text: `  Max Orb Dist: ${this.maxOrbDistance.value} | Auto-Jaunt: ${
+					this.autoJauntOnMax.value ? "ON" : "OFF"
+				}`,
+				color: Color.Aqua
 			}
 		]
 
@@ -838,7 +903,7 @@ new (class PuckCombo {
 			}
 		}
 
-		const w = Math.max(maxW + padX * 2, 170)
+		const w = Math.max(maxW + padX * 2, 180)
 		const h = lines.length * textH + padY * 2
 		const pos = this.statusHudPos
 
