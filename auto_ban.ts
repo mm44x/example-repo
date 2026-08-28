@@ -261,11 +261,11 @@ new (class AutoBanUtility {
 		}
 
 		const now = Date.now()
-		if (now - this.lastBanAttemptTime < 300) {
+		if (now - this.lastBanAttemptTime < 250) {
 			return
 		}
 
-		// Vector 1: Re-assert native core hook
+		// Vector 1: Native core hook
 		ToggleBanHeroes(availableIds)
 
 		const strategy = this.banStrategy.SelectedID
@@ -280,11 +280,18 @@ new (class AutoBanUtility {
 			targetIds = [availableIds[randomIndex]]
 		}
 
-		// Find Panorama Root Panel
-		let rootPanel: any
+		// Find Panorama Root Panels (Hud & Dashboard)
+		const targetPanels: any[] = []
 		try {
 			if (typeof Panorama !== "undefined" && Panorama) {
-				rootPanel = Panorama.FindRootPanel("DotaDashboard") ?? Panorama.FindRootPanel("DotaHud")
+				const hud = Panorama.FindRootPanel("DotaHud")
+				const dash = Panorama.FindRootPanel("DotaDashboard")
+				if (hud) {
+					targetPanels.push(hud)
+				}
+				if (dash) {
+					targetPanels.push(dash)
+				}
 			}
 		} catch {
 			// ignore
@@ -293,38 +300,69 @@ new (class AutoBanUtility {
 		for (const id of targetIds) {
 			const heroName = UnitData.GetHeroNameByID(id)
 
-			// Vector 2: Panorama ExecuteScript (Runs directly inside Dota 2 UI thread)
-			try {
-				if (typeof Panorama !== "undefined" && Panorama && rootPanel) {
+			// Vector 2: Panorama DOM Traversal & Event Dispatch script
+			for (const panel of targetPanels) {
+				try {
 					Panorama.ExecuteScript(
-						rootPanel,
-						`try {
-							$.DispatchEvent('DOTACustomHeroPickRulesHeroBanned', ${id});
-							$.DispatchEvent('DOTAHeroSelected', ${id}, true);
-							$.DispatchEvent('DOTAPickHero', ${id}, true);
-							$.DispatchEvent('DOTABanHero', ${id});
-							$.DispatchEvent('DOTAHeroSelectionBanHero', ${id});
-							$.DispatchEvent('DOTASuggestHero', ${id}, true);
-							if (typeof GameEvents !== 'undefined' && GameEvents) {
-								GameEvents.SendCustomGameEventToServer('dota_hero_ban', { hero_id: ${id} });
-								GameEvents.SendCustomGameEventToServer('custom_hero_pick_rules_hero_banned', { hero_id: ${id} });
-								GameEvents.SendCustomGameEventToServer('turbo_hero_banned', { hero_id: ${id} });
-							}
-						} catch(e) {}`
+						panel,
+						`(function() {
+							var heroId = ${id};
+							var heroName = "${heroName}";
+							try { $.DispatchEvent('DOTACustomHeroPickRulesHeroBanned', heroId); } catch(e) {}
+							try { $.DispatchEvent('DOTACustomHeroPickRulesBanHero', heroId); } catch(e) {}
+							try { $.DispatchEvent('DOTAHeroSelectionBanHero', heroId); } catch(e) {}
+							try { $.DispatchEvent('DOTABanHero', heroId); } catch(e) {}
+							try { $.DispatchEvent('DOTAPickHero', heroId, false, true); } catch(e) {}
+							try { $.DispatchEvent('DOTAPickHero', heroId, true); } catch(e) {}
+							try { $.DispatchEvent('DOTAHeroSelected', heroId, true); } catch(e) {}
+							try { $.DispatchEvent('DOTASuggestHero', heroId, true); } catch(e) {}
+
+							try {
+								var context = $.GetContextPanel();
+								if (context) {
+									var card = context.FindChildTraverse("HeroCard_" + heroName) || 
+											   context.FindChildTraverse("HeroCard" + heroId) ||
+											   context.FindChildTraverse("HeroCard_" + heroId);
+									if (card) {
+										$.DispatchEvent('Activated', card, 'mouse');
+										$.DispatchEvent('DOTAHeroCardClicked', card, heroId);
+									}
+									var banBtn = context.FindChildTraverse("BanButton") || 
+												 context.FindChildTraverse("HeroBanButton") ||
+												 context.FindChildTraverse("BanHeroButton") ||
+												 context.FindChildTraverse("LockInButton");
+									if (banBtn) {
+										$.DispatchEvent('Activated', banBtn, 'mouse');
+									}
+								}
+							} catch(e) {}
+
+							try {
+								if (typeof GameEvents !== 'undefined' && GameEvents) {
+									GameEvents.SendCustomGameEventToServer('dota_hero_ban', { hero_id: heroId, hero_name: heroName });
+									GameEvents.SendCustomGameEventToServer('custom_hero_pick_rules_hero_banned', { hero_id: heroId });
+									GameEvents.SendCustomGameEventToServer('turbo_hero_banned', { hero_id: heroId });
+								}
+							} catch(e) {}
+						})();`
 					)
+				} catch {
+					// ignore
 				}
-			} catch {
-				// ignore
 			}
 
-			// Vector 3: Panorama.DispatchEventAsync with exact JS invocation syntax
+			// Vector 3: Direct Panorama.DispatchEventAsync
 			try {
 				if (typeof Panorama !== "undefined" && Panorama) {
-					Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesHeroBanned(${id})`, rootPanel, 0)
-					Panorama.DispatchEventAsync(`DOTAHeroSelected(${id}, true)`, rootPanel, 0)
-					Panorama.DispatchEventAsync(`DOTABanHero(${id})`, rootPanel, 0)
-					Panorama.DispatchEventAsync(`DOTAPickHero(${id}, true)`, rootPanel, 0)
-					Panorama.DispatchEventAsync(`DOTASuggestHero(${id}, true)`, rootPanel, 0)
+					for (const panel of targetPanels) {
+						Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesHeroBanned(${id})`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesBanHero(${id})`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTAHeroSelectionBanHero(${id})`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTABanHero(${id})`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTAHeroSelected(${id}, true)`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTAPickHero(${id}, false, true)`, panel, 0)
+						Panorama.DispatchEventAsync(`DOTASuggestHero(${id}, true)`, panel, 0)
+					}
 				}
 			} catch {
 				// ignore
@@ -358,7 +396,7 @@ new (class AutoBanUtility {
 		this.debugStatus = `Banning [${targetIds
 			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
 			.join(", ")}] (Attempt #${this.banAttemptCount})`
-		this.sleeper.Sleep(350)
+		this.sleeper.Sleep(300)
 	}
 
 	private updateDebugInfo(): void {
