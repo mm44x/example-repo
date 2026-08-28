@@ -1,5 +1,5 @@
 import {
-	Ability,
+	Color,
 	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
 	EntityManager,
@@ -11,12 +11,34 @@ import {
 	InputManager,
 	LocalPlayer,
 	Menu,
+	ParticleAttachment,
+	ParticlesSDK,
+	RendererSDK,
 	TickSleeper,
-	Unit,
-	Vector3
+	Vector2,
+	Vector3,
+	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
 
+import { claimOrder } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
+
+const COMBO_SPELLS = [
+	"item_blink",
+	"item_sheepstick",
+	"item_orchid",
+	"item_bloodthorn",
+	"item_nullifier",
+	"item_rod_of_atos",
+	"item_ethereal_blade",
+	"item_veil_of_discord",
+	"item_shivas_guard",
+	"puck_dream_coil",
+	"puck_waning_rift",
+	"puck_illusory_orb",
+	"item_dagon",
+	"puck_phase_shift"
+]
 
 new (class PuckCombo {
 	private readonly entry = Menu.AddEntry("mm44x")
@@ -25,121 +47,131 @@ new (class PuckCombo {
 
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true, "Enable/Disable Puck combo script")
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Puck combo")
-	private readonly clearCreepKey = this.entry.AddKeybind("Clear Creep Key", "1", "Hold to execute Puck clear creep combo (Cursor Target)")
-	
+	private readonly clearCreepKey = this.entry.AddKeybind(
+		"Clear Creep & Escape Key",
+		"1",
+		"Hold to clear creep wave with Waning Rift and escape with Illusory Orb"
+	)
+
 	private readonly lockTargetEnabled = this.entry.AddToggle(
 		"Lock Target During Combo",
 		true,
-		"If enabled, locks onto a single target hero when pressing the combo key."
+		"If enabled, locks onto a single target hero when pressing the combo key"
 	)
-	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
+	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 900, 300, 1600)
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_sheepstick", "item_dagon", "item_shivas_guard"],
+		[
+			"item_blink",
+			"item_sheepstick",
+			"item_orchid",
+			"item_bloodthorn",
+			"item_nullifier",
+			"item_rod_of_atos",
+			"item_ethereal_blade",
+			"item_veil_of_discord",
+			"item_shivas_guard",
+			"item_dagon",
+			"item_black_king_bar",
+			"item_cyclone"
+		],
 		new Map([
 			["item_blink", true],
 			["item_sheepstick", true],
+			["item_orchid", true],
+			["item_bloodthorn", true],
+			["item_nullifier", true],
+			["item_rod_of_atos", true],
+			["item_ethereal_blade", true],
+			["item_veil_of_discord", true],
+			["item_shivas_guard", true],
 			["item_dagon", true],
-			["item_shivas_guard", true]
+			["item_black_king_bar", true],
+			["item_cyclone", false]
 		]),
 		"Toggle item usage in the combo"
+	)
+
+	// Dream Coil multi-target latch
+	private readonly multiCoil = this.entry.AddToggle(
+		"Multi-Hero Dream Coil",
+		true,
+		"Optimize Dream Coil placement to latch onto multiple clumped enemies"
 	)
 
 	private readonly smartOrbWalkEnabled = this.entry.AddToggle("Enable Smart Orb Walk", true)
 	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 5)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle("Stop-to-Cancel Backswing", false)
 
+	// Visuals
+	private readonly showStatusHUD = this.entry.AddToggle("Draw Status HUD", true)
+	private statusHudPos = new Vector2(50, 400)
+	private isDraggingStatus = false
+
 	private comboSequenceGrid: any
 	private lockedTarget: Hero | undefined = undefined
 
 	private readonly sleeper = new TickSleeper()
+	private readonly pSDK = new ParticlesSDK()
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
-		defaultCombo.set("item_blink", [true, true, true, 0])
-		defaultCombo.set("puck_dream_coil", [true, true, true, 1])
-		defaultCombo.set("puck_waning_rift", [true, true, true, 2])
-		defaultCombo.set("puck_illusory_orb", [true, true, true, 3])
-		defaultCombo.set("puck_phase_shift", [true, true, true, 4])
+		COMBO_SPELLS.forEach((name, i) => defaultCombo.set(name, [true, true, true, i]))
 
-		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
-			"Combo Order",
-			[
-				"item_blink",
-				"puck_dream_coil",
-				"puck_waning_rift",
-				"puck_illusory_orb",
-				"puck_phase_shift"
-			],
-			defaultCombo
-		)
+		this.comboSequenceGrid = this.entry.AddDynamicImageSelector("Combo Order", COMBO_SPELLS, defaultCombo)
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
+		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
 	}
 
-	private get hasLocalHero() {
-		return (
-			LocalPlayer &&
-			LocalPlayer.Hero &&
-			LocalPlayer.Hero.IsValid &&
-			LocalPlayer.Hero.Name === "npc_dota_hero_puck"
-		)
-	}
-
-	private executeComboAbility(
-		hero: Hero,
-		ability: Ability,
-		target: Hero | Unit,
-		isPosition = false,
-		pos?: Vector3
-	): boolean {
-		const isNoTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
-		const isTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
-		const isPoint = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
-
-		if (isPosition || isPoint) {
-			const castPos = pos ?? target.Position.Clone()
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-				issuers: [hero],
-				position: castPos,
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		} else if (isTarget) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-				issuers: [hero],
-				target: target.Index,
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		} else if (isNoTarget) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-				issuers: [hero],
-				ability: ability.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			return true
-		}
-		return false
+	private get hasLocalHero(): boolean {
+		return Boolean(LocalPlayer?.Hero?.IsValid && LocalPlayer.Hero.Name === "npc_dota_hero_puck")
 	}
 
 	private onGameEnded(): void {
 		this.sleeper.Sleep(0)
-		this.comboSequenceGrid = null
 		this.lockedTarget = undefined
+		this.pSDK.DestroyAll()
+	}
+
+	private findOptimalCoilPosition(hero: Hero, primaryTarget: Hero): Vector3 {
+		if (!this.multiCoil.value) {
+			return primaryTarget.Position.Clone()
+		}
+
+		const coilRadius = 375
+		const enemies = EntityManager.GetEntitiesByClass(Hero).filter(
+			e =>
+				e.IsValid &&
+				e.IsAlive &&
+				e.IsVisible &&
+				e.IsEnemy(hero) &&
+				!e.IsIllusion &&
+				e.Distance2D(primaryTarget) <= coilRadius * 1.8
+		)
+
+		if (enemies.length <= 1) {
+			return primaryTarget.Position.Clone()
+		}
+
+		let avgX = 0
+		let avgY = 0
+		let avgZ = 0
+		for (const enemy of enemies) {
+			avgX += enemy.Position.x
+			avgY += enemy.Position.y
+			avgZ += enemy.Position.z
+		}
+
+		return new Vector3(avgX / enemies.length, avgY / enemies.length, avgZ / enemies.length)
+	}
+
+	private executeOrderAndClaim(order: any, delay: number): void {
+		ExecuteOrder.PrepareOrder(order)
+		claimOrder()
+		this.sleeper.Sleep(delay)
 	}
 
 	private PostDataUpdate(delta: number): void {
@@ -149,24 +181,32 @@ new (class PuckCombo {
 
 		const hero = LocalPlayer?.Hero
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			this.pSDK.DestroyByKey("puck_locked_target")
 			return
 		}
 
 		if (!this.comboEnabled.value) {
+			this.pSDK.DestroyByKey("puck_locked_target")
 			return
 		}
 
-		// @ts-ignore
 		const isHeroCombo = this.comboKey.isPressed
-		// @ts-ignore
 		const isCreepCombo = this.clearCreepKey.isPressed
 
 		if (!isHeroCombo && !isCreepCombo) {
 			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("puck_locked_target")
 			return
 		}
 
-		if (hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed || hero.HasBuffByName("modifier_puck_phase_shift")) {
+		// Don't act while phase-shifted or disabled
+		if (
+			hero.IsChanneling ||
+			hero.IsStunned ||
+			hero.IsSilenced ||
+			hero.IsHexed ||
+			hero.HasBuffByName("modifier_puck_phase_shift")
+		) {
 			return
 		}
 
@@ -175,6 +215,9 @@ new (class PuckCombo {
 			return
 		}
 
+		// -------------------------------------------------------------
+		// TARGET LOCKING SYSTEM
+		// -------------------------------------------------------------
 		let bestTarget: Hero | undefined
 		const lockTarget = this.lockTargetEnabled.value
 
@@ -191,7 +234,7 @@ new (class PuckCombo {
 			}
 
 			if (!this.lockedTarget) {
-				const maxCastRange = 1200
+				const maxCastRange = 1300
 				const mousePos = InputManager.CursorOnWorld
 				let foundTarget: Hero | undefined
 				let minDist = Infinity
@@ -200,7 +243,11 @@ new (class PuckCombo {
 					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
 						const distToCursor = enemy.Position.Distance2D(mousePos)
 						const distToHero = hero.Distance2D(enemy)
-						if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
+						if (
+							distToCursor < this.comboRadius.value &&
+							distToHero <= maxCastRange &&
+							distToCursor < minDist
+						) {
 							minDist = distToCursor
 							foundTarget = enemy
 						}
@@ -212,7 +259,7 @@ new (class PuckCombo {
 			}
 			bestTarget = this.lockedTarget
 		} else {
-			const maxCastRange = 1200
+			const maxCastRange = 1300
 			const mousePos = InputManager.CursorOnWorld
 			let foundTarget: Hero | undefined
 			let minDist = Infinity
@@ -229,68 +276,37 @@ new (class PuckCombo {
 			}
 			bestTarget = foundTarget
 		}
-		
+
 		if (!bestTarget) {
+			this.pSDK.DestroyByKey("puck_locked_target")
 			return
 		}
+
+		// Target visual particle ring
+		this.pSDK.DrawCircle("puck_locked_target", bestTarget, 130, {
+			Color: new Color(255, 60, 220, 220),
+			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+		})
 
 		if (this.sleeper.Sleeping) {
 			return
 		}
 
 		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
+		const targetDist = hero.Distance2D(bestTarget)
+		const delay = GameState.InputLag * 1000 + 50
 
-		// Execute Item Combos first (if any besides blink)
-		if (!isTargetImmune) {
-			if (this.itemsSelector.IsEnabled("item_sheepstick") && hero.Distance2D(bestTarget) <= 850) {
-				const hex = hero.Items.find(i => i.Name === "item_sheepstick")
-				if (hex && hex.IsValid && hex.Cooldown <= 0.1 && hex.CanBeUsable && !hero.IsMuted && hero.Mana >= hex.ManaCost) {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-						issuers: [hero],
-						target: bestTarget.Index,
-						ability: hex.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-					this.sleeper.Sleep(GameState.InputLag * 1000 + hex.CastPoint * 1000 + 100)
-					return
-				}
-			}
-			
-			// Try Dagon
-			if (this.itemsSelector.IsEnabled("item_dagon")) {
-				const dagon = hero.Items.find(i => i.Name.startsWith("item_dagon"))
-				if (dagon && dagon.IsValid && dagon.Cooldown <= 0.1 && dagon.CanBeUsable && !hero.IsMuted && hero.Mana >= dagon.ManaCost) {
-					const r = dagon.CastRange > 0 ? dagon.CastRange : 800
-					if (hero.Distance2D(bestTarget) <= r) {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-							issuers: [hero],
-							target: bestTarget.Index,
-							ability: dagon.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-						this.sleeper.Sleep(GameState.InputLag * 1000 + dagon.CastPoint * 1000 + 100)
-						return
-					}
-				}
-			}
-		}
-
-		// Execute Combo Sequence
-		for (const spellName of this.comboSequenceGrid.values) {
-			if (!this.comboSequenceGrid.IsEnabled(spellName)) {
+		// -------------------------------------------------------------
+		// DYNAMIC COMBO SEQUENCE EXECUTION
+		// -------------------------------------------------------------
+		for (const entryName of this.comboSequenceGrid.values) {
+			if (!this.comboSequenceGrid.IsEnabled(entryName)) {
 				continue
 			}
 
-			// Item Blink
-			if (spellName === "item_blink") {
-				const blinkEnabled = this.itemsSelector.IsEnabled("item_blink")
-				if (blinkEnabled) {
+			// 1. Blink Dagger
+			if (entryName === "item_blink") {
+				if (this.itemsSelector.IsEnabled("item_blink") && !hero.IsMuted) {
 					const blink = hero.Items.find(
 						item =>
 							item.Name === "item_blink" ||
@@ -298,20 +314,20 @@ new (class PuckCombo {
 							item.Name === "item_overwhelming_blink" ||
 							item.Name === "item_arcane_blink"
 					)
-					
-					if (blink && blink.IsValid && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost && !hero.IsMuted) {
-						const dist = hero.Distance2D(bestTarget)
-						if (dist > 400 && dist <= 1200) {
-							ExecuteOrder.PrepareOrder({
-								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-								issuers: [hero],
-								position: bestTarget.Position,
-								ability: blink.Index,
-								queue: false,
-								showEffects: true,
-								isPlayerInput: false
-							})
-							this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					if (blink && blink.CanBeUsable && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost) {
+						if (targetDist > 400 && targetDist <= 1200) {
+							this.executeOrderAndClaim(
+								{
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+									issuers: [hero],
+									position: bestTarget.Position,
+									ability: blink.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								},
+								delay + 50
+							)
 							return
 						}
 					}
@@ -319,79 +335,374 @@ new (class PuckCombo {
 				continue
 			}
 
-			const ability = hero.GetAbilityByName(spellName)
-			if (
-				!ability ||
-				!ability.IsValid ||
-				ability.IsHidden ||
-				ability.Level <= 0 ||
-				ability.Cooldown > 0.1 ||
-				hero.Mana < ability.ManaCost
-			) {
-				continue
-			}
-
-			if (isTargetImmune && spellName !== "puck_dream_coil") {
-				continue // Dream coil pierces BKB in some cases or is commonly thrown anyway.
-			}
-			// Special Handling: Illusory Orb (towards fountain)
-			if (spellName === "puck_illusory_orb") {
-				// Cast towards team fountain
-				const friendlyFountain = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
-				const fountainPos = friendlyFountain
-					? friendlyFountain.Position.Clone()
-					: (hero.Team === 2 ? new Vector3(-7400, -7300, 512) : new Vector3(7400, 7300, 512))
-				
-				const dir = fountainPos.Subtract(hero.Position).Normalize()
-				// Cap distance to prevent walking
-				const castPos = hero.Position.Add(dir.MultiplyScalar(500))
-
-				const isVectorTarget = ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
-				if (isVectorTarget) {
-					// Use the wrapper's built-in CastVectorTargetPosition method
-					// The curveEndPos is the same direction to make it straight
-					const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
-					hero.CastVectorTargetPosition(ability, castPos, curveEndPos)
-				} else {
-					// Standard point target
-					hero.CastPosition(ability, castPos)
+			// 2. BKB (Black King Bar)
+			if (entryName === "item_black_king_bar") {
+				if (this.itemsSelector.IsEnabled("item_black_king_bar") && !hero.IsMuted) {
+					const bkb = hero.GetItemByName("item_black_king_bar")
+					if (bkb && bkb.CanBeUsable && bkb.Cooldown <= 0.1 && !hero.IsDebuffImmune) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+								issuers: [hero],
+								ability: bkb.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
 				}
-				
-				console.log("[PuckCombo] Casted Illusory Orb towards Fountain")
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				return
-			}
-
-			// Special Handling: Phase Shift
-			if (spellName === "puck_phase_shift") {
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-					issuers: [hero],
-					ability: ability.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
-				console.log("[PuckCombo] Casted Phase Shift")
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				return
-			}
-
-			// Standard Cast for Dream Coil, Waning Rift
-			const castRange = ability.CastRange > 0 ? ability.CastRange : (spellName === "puck_waning_rift" ? 400 : 800)
-			
-			if (hero.Distance2D(bestTarget) > castRange) {
 				continue
 			}
 
-			if (this.executeComboAbility(hero, ability, bestTarget)) {
-				console.log(`[PuckCombo] Casted spell: ${spellName}`)
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				return
+			// 3. Scythe of Vyse (Hex)
+			if (entryName === "item_sheepstick") {
+				if (this.itemsSelector.IsEnabled("item_sheepstick") && !hero.IsMuted && !isTargetImmune) {
+					const hex = hero.GetItemByName("item_sheepstick")
+					if (
+						hex &&
+						hex.CanBeUsable &&
+						hex.Cooldown <= 0.1 &&
+						hero.Mana >= hex.ManaCost &&
+						targetDist <= (hex.CastRange || 800)
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: hex.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 4. Orchid / Bloodthorn
+			if (entryName === "item_orchid" || entryName === "item_bloodthorn") {
+				if (
+					(this.itemsSelector.IsEnabled("item_orchid") || this.itemsSelector.IsEnabled("item_bloodthorn")) &&
+					!hero.IsMuted &&
+					!isTargetImmune
+				) {
+					const silenceItem = hero.GetItemByName("item_bloodthorn") ?? hero.GetItemByName("item_orchid")
+					if (
+						silenceItem &&
+						silenceItem.CanBeUsable &&
+						silenceItem.Cooldown <= 0.1 &&
+						hero.Mana >= silenceItem.ManaCost &&
+						targetDist <= (silenceItem.CastRange || 800)
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: silenceItem.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 5. Nullifier
+			if (entryName === "item_nullifier") {
+				if (this.itemsSelector.IsEnabled("item_nullifier") && !hero.IsMuted && !isTargetImmune) {
+					const nullifier = hero.GetItemByName("item_nullifier")
+					if (
+						nullifier &&
+						nullifier.CanBeUsable &&
+						nullifier.Cooldown <= 0.1 &&
+						hero.Mana >= nullifier.ManaCost &&
+						targetDist <= (nullifier.CastRange || 800)
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: nullifier.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 6. Rod of Atos / Gleipnir
+			if (entryName === "item_rod_of_atos") {
+				if (this.itemsSelector.IsEnabled("item_rod_of_atos") && !hero.IsMuted && !isTargetImmune) {
+					const atos = hero.GetItemByName("item_rod_of_atos")
+					const gleipnir = hero.GetItemByName("item_gungir")
+					const rootItem = gleipnir ?? atos
+					if (
+						rootItem &&
+						rootItem.CanBeUsable &&
+						rootItem.Cooldown <= 0.1 &&
+						hero.Mana >= rootItem.ManaCost
+					) {
+						if (rootItem.Name === "item_gungir") {
+							this.executeOrderAndClaim(
+								{
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+									issuers: [hero],
+									position: bestTarget.Position,
+									ability: rootItem.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								},
+								delay
+							)
+							return
+						} else if (targetDist <= (rootItem.CastRange || 1000)) {
+							this.executeOrderAndClaim(
+								{
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+									issuers: [hero],
+									target: bestTarget.Index,
+									ability: rootItem.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								},
+								delay
+							)
+							return
+						}
+					}
+				}
+				continue
+			}
+
+			// 7. Ethereal Blade
+			if (entryName === "item_ethereal_blade") {
+				if (this.itemsSelector.IsEnabled("item_ethereal_blade") && !hero.IsMuted && !isTargetImmune) {
+					const eblade = hero.GetItemByName("item_ethereal_blade")
+					if (
+						eblade &&
+						eblade.CanBeUsable &&
+						eblade.Cooldown <= 0.1 &&
+						hero.Mana >= eblade.ManaCost &&
+						targetDist <= (eblade.CastRange || 800)
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: eblade.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 8. Veil of Discord
+			if (entryName === "item_veil_of_discord") {
+				if (this.itemsSelector.IsEnabled("item_veil_of_discord") && !hero.IsMuted && !isTargetImmune) {
+					const veil = hero.GetItemByName("item_veil_of_discord")
+					if (veil && veil.CanBeUsable && veil.Cooldown <= 0.1 && hero.Mana >= veil.ManaCost) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+								issuers: [hero],
+								position: bestTarget.Position,
+								ability: veil.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 9. Shiva's Guard
+			if (entryName === "item_shivas_guard") {
+				if (this.itemsSelector.IsEnabled("item_shivas_guard") && !hero.IsMuted) {
+					const shiva = hero.GetItemByName("item_shivas_guard")
+					if (
+						shiva &&
+						shiva.CanBeUsable &&
+						shiva.Cooldown <= 0.1 &&
+						hero.Mana >= shiva.ManaCost &&
+						targetDist <= 900
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+								issuers: [hero],
+								ability: shiva.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// 10. Dagon 1-5
+			if (entryName === "item_dagon") {
+				if (this.itemsSelector.IsEnabled("item_dagon") && !hero.IsMuted && !isTargetImmune) {
+					const dagon = hero.Items.find(i => i.Name.startsWith("item_dagon"))
+					if (
+						dagon &&
+						dagon.CanBeUsable &&
+						dagon.Cooldown <= 0.1 &&
+						hero.Mana >= dagon.ManaCost &&
+						targetDist <= (dagon.CastRange || 750)
+					) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+								issuers: [hero],
+								target: bestTarget.Index,
+								ability: dagon.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// -------------------------------------------------------------
+			// PUCK HERO SPELLS
+			// -------------------------------------------------------------
+
+			// Dream Coil (R)
+			if (entryName === "puck_dream_coil") {
+				const coil = hero.GetAbilityByName("puck_dream_coil")
+				if (coil && coil.IsValid && coil.Level > 0 && coil.Cooldown <= 0.1 && hero.Mana >= coil.ManaCost) {
+					const castRange = coil.CastRange > 0 ? coil.CastRange : 800
+					if (targetDist <= castRange + 300) {
+						const coilPos = this.findOptimalCoilPosition(hero, bestTarget)
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+								issuers: [hero],
+								position: coilPos,
+								ability: coil.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay + coil.CastPoint * 1000
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// Waning Rift (W Leap)
+			if (entryName === "puck_waning_rift") {
+				const rift = hero.GetAbilityByName("puck_waning_rift")
+				if (rift && rift.IsValid && rift.Level > 0 && rift.Cooldown <= 0.1 && hero.Mana >= rift.ManaCost) {
+					// Modern Waning Rift is a 400 range leap
+					const maxLeapDist = 400
+					const dir = bestTarget.Position.Subtract(hero.Position).Normalize()
+					const leapDist = Math.min(targetDist, maxLeapDist)
+					const leapPos = hero.Position.Add(dir.MultiplyScalar(leapDist))
+
+					if (targetDist <= maxLeapDist + (rift.CastRange || 400)) {
+						this.executeOrderAndClaim(
+							{
+								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+								issuers: [hero],
+								position: leapPos,
+								ability: rift.Index,
+								queue: false,
+								showEffects: true,
+								isPlayerInput: false
+							},
+							delay + rift.CastPoint * 1000
+						)
+						return
+					}
+				}
+				continue
+			}
+
+			// Illusory Orb (Q) - Burst Damage towards Enemy in Combo!
+			if (entryName === "puck_illusory_orb") {
+				const orb = hero.GetAbilityByName("puck_illusory_orb")
+				if (orb && orb.IsValid && orb.Level > 0 && orb.Cooldown <= 0.1 && hero.Mana >= orb.ManaCost) {
+					const castRange = orb.CastRange > 0 ? orb.CastRange : 1800
+					if (targetDist <= castRange) {
+						const isVector = orb.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
+						if (isVector) {
+							hero.CastVectorTargetPosition(orb, bestTarget.Position, bestTarget.Position)
+						} else {
+							hero.CastPosition(orb, bestTarget.Position)
+						}
+						claimOrder()
+						this.sleeper.Sleep(delay + orb.CastPoint * 1000)
+						return
+					}
+				}
+				continue
+			}
+
+			// Phase Shift (E)
+			if (entryName === "puck_phase_shift") {
+				const phase = hero.GetAbilityByName("puck_phase_shift")
+				if (phase && phase.IsValid && phase.Level > 0 && phase.Cooldown <= 0.1 && hero.Mana >= phase.ManaCost) {
+					this.executeOrderAndClaim(
+						{
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+							issuers: [hero],
+							ability: phase.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						},
+						delay
+					)
+					return
+				}
+				continue
 			}
 		}
 
-		// Fallback to Orb Walk
+		// Orbwalk towards target
 		executeOrbwalk(hero, bestTarget, this.sleeper, {
 			enabled: this.smartOrbWalkEnabled.value,
 			safeDistancePct: this.smartOrbWalkDistancePct.value,
@@ -399,16 +710,19 @@ new (class PuckCombo {
 		})
 	}
 
-	private executeClearCreepCombo(hero: Hero) {
+	/**
+	 * Clear Creep Wave & Instant Escape Routine
+	 */
+	private executeClearCreepCombo(hero: Hero): void {
 		if (this.sleeper.Sleeping) {
 			return
 		}
 
 		const mousePos = InputManager.CursorOnWorld
-		
-		// 1. Blink
-		const blinkEnabled = this.itemsSelector.IsEnabled("item_blink")
-		if (blinkEnabled) {
+		const delay = GameState.InputLag * 1000 + 40
+
+		// 1. Blink into creep wave
+		if (this.itemsSelector.IsEnabled("item_blink") && !hero.IsMuted) {
 			const blink = hero.Items.find(
 				item =>
 					item.Name === "item_blink" ||
@@ -416,10 +730,9 @@ new (class PuckCombo {
 					item.Name === "item_overwhelming_blink" ||
 					item.Name === "item_arcane_blink"
 			)
-			if (blink && blink.IsValid && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost && !hero.IsMuted) {
-				const dist = hero.Distance2D(mousePos)
-				if (dist > 400) {
-					ExecuteOrder.PrepareOrder({
+			if (blink && blink.CanBeUsable && blink.Cooldown <= 0.1 && hero.Distance2D(mousePos) > 350) {
+				this.executeOrderAndClaim(
+					{
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 						issuers: [hero],
 						position: mousePos,
@@ -427,57 +740,138 @@ new (class PuckCombo {
 						queue: false,
 						showEffects: true,
 						isPlayerInput: false
-					})
-					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-					return
-				}
+					},
+					delay
+				)
+				return
 			}
 		}
 
-		// 2. Waning Rift
-		const waningRift = hero.GetAbilityByName("puck_waning_rift")
-		if (waningRift && waningRift.IsValid && waningRift.Cooldown <= 0.1 && hero.Mana >= waningRift.ManaCost) {
-			hero.CastPosition(waningRift, mousePos)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + waningRift.CastPoint * 1000 + 100)
+		// 2. Waning Rift on Creep wave
+		const rift = hero.GetAbilityByName("puck_waning_rift")
+		if (rift && rift.IsValid && rift.Level > 0 && rift.Cooldown <= 0.1 && hero.Mana >= rift.ManaCost) {
+			hero.CastPosition(rift, mousePos)
+			claimOrder()
+			this.sleeper.Sleep(delay + rift.CastPoint * 1000)
 			return
 		}
 
-		// 3. Illusory Orb (towards fountain)
-		const illusoryOrb = hero.GetAbilityByName("puck_illusory_orb")
-		if (illusoryOrb && illusoryOrb.IsValid && illusoryOrb.Cooldown <= 0.1 && hero.Mana >= illusoryOrb.ManaCost) {
+		// 3. Illusory Orb back towards friendly fountain
+		const orb = hero.GetAbilityByName("puck_illusory_orb")
+		if (orb && orb.IsValid && orb.Level > 0 && orb.Cooldown <= 0.1 && hero.Mana >= orb.ManaCost) {
 			const friendlyFountain = EntityManager.GetEntitiesByClass(Fountain).find(f => f.IsValid && !f.IsEnemy(hero))
 			const fountainPos = friendlyFountain
 				? friendlyFountain.Position.Clone()
-				: (hero.Team === 2 ? new Vector3(-7400, -7300, 512) : new Vector3(7400, 7300, 512))
-			
+				: hero.Team === 2
+				? new Vector3(-7400, -7300, 512)
+				: new Vector3(7400, 7300, 512)
+
 			const dir = fountainPos.Subtract(hero.Position).Normalize()
 			const castPos = hero.Position.Add(dir.MultiplyScalar(500))
-			const isVectorTarget = illusoryOrb.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
-			
-			if (isVectorTarget) {
+
+			const isVector = orb.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_VECTOR_TARGETING)
+			if (isVector) {
 				const curveEndPos = hero.Position.Add(dir.MultiplyScalar(1000))
-				hero.CastVectorTargetPosition(illusoryOrb, castPos, curveEndPos)
+				hero.CastVectorTargetPosition(orb, castPos, curveEndPos)
 			} else {
-				hero.CastPosition(illusoryOrb, castPos)
+				hero.CastPosition(orb, castPos)
 			}
-			
-			this.sleeper.Sleep(GameState.InputLag * 1000 + illusoryOrb.CastPoint * 1000 + 100)
+			claimOrder()
+			this.sleeper.Sleep(delay + orb.CastPoint * 1000)
 			return
 		}
 
 		// 4. Phase Shift
-		const phaseShift = hero.GetAbilityByName("puck_phase_shift")
-		if (phaseShift && phaseShift.IsValid && phaseShift.Cooldown <= 0.1 && hero.Mana >= phaseShift.ManaCost) {
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-				issuers: [hero],
-				ability: phaseShift.Index,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
-			this.sleeper.Sleep(GameState.InputLag * 1000 + phaseShift.CastPoint * 1000 + 100)
+		const phase = hero.GetAbilityByName("puck_phase_shift")
+		if (phase && phase.IsValid && phase.Level > 0 && phase.Cooldown <= 0.1 && hero.Mana >= phase.ManaCost) {
+			this.executeOrderAndClaim(
+				{
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+					issuers: [hero],
+					ability: phase.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				},
+				delay
+			)
+		}
+	}
+
+	private Draw(): void {
+		if (ExecuteOrder.DisableHumanizer || !this.hasLocalHero || !this.showStatusHUD.value) {
 			return
+		}
+
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			return
+		}
+
+		const cursor = InputManager.CursorOnScreen
+		const padX = 10
+		const padY = 8
+		const textH = RendererSDK.DefaultTextSize
+
+		const isHeroComboPressed = this.comboKey.isPressed
+		const isCreepComboPressed = this.clearCreepKey.isPressed
+		const statusText = isHeroComboPressed ? "COMBO ACTIVE" : isCreepComboPressed ? "CLEAR CREEP" : "READY"
+		const statusColor = isHeroComboPressed ? Color.Green : isCreepComboPressed ? Color.Aqua : Color.White
+
+		const lines: { text: string; color: Color }[] = [
+			{ text: `[Puck Combo] Status: ${statusText}`, color: statusColor },
+			{
+				text: `  Target: ${this.lockedTarget ? this.lockedTarget.Name.replace("npc_dota_hero_", "") : "None"}`,
+				color: this.lockedTarget ? Color.Yellow : Color.LightGray
+			},
+			{
+				text: `  Dream Coil: ${hero.GetAbilityByName("puck_dream_coil")?.Cooldown.toFixed(1) ?? "0"}s`,
+				color: (hero.GetAbilityByName("puck_dream_coil")?.Cooldown ?? 0) <= 0.1 ? Color.Green : Color.Red
+			}
+		]
+
+		let maxW = 0
+		for (const line of lines) {
+			const sz = RendererSDK.GetTextSize(line.text, RendererSDK.DefaultFontName, RendererSDK.DefaultTextSize)
+			if (sz.x > maxW) {
+				maxW = sz.x
+			}
+		}
+
+		const w = Math.max(maxW + padX * 2, 170)
+		const h = lines.length * textH + padY * 2
+		const pos = this.statusHudPos
+
+		if (InputManager.IsMouseKeyDown(VMouseKeys.MK_LBUTTON)) {
+			if (
+				!this.isDraggingStatus &&
+				cursor.x >= pos.x &&
+				cursor.x <= pos.x + w &&
+				cursor.y >= pos.y &&
+				cursor.y <= pos.y + h
+			) {
+				this.isDraggingStatus = true
+			}
+		} else {
+			this.isDraggingStatus = false
+		}
+
+		if (this.isDraggingStatus) {
+			this.statusHudPos.CopyFrom(cursor.Subtract(new Vector2(w / 2, h / 2)))
+		}
+
+		RendererSDK.FilledRect(this.statusHudPos, new Vector2(w, h), new Color(0, 0, 0, 220))
+		RendererSDK.OutlinedRect(
+			this.statusHudPos,
+			new Vector2(w, h),
+			1.5,
+			isHeroComboPressed ? new Color(255, 60, 220, 220) : new Color(0, 200, 255, 200)
+		)
+
+		let ly = this.statusHudPos.y + padY
+		for (const line of lines) {
+			RendererSDK.Text(line.text, new Vector2(this.statusHudPos.x + padX, ly), line.color)
+			ly += textH
 		}
 	}
 })()
