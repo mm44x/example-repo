@@ -18,6 +18,8 @@ import {
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
+import { claimOrder } from "./coordination"
+
 interface SpellConfig {
 	name: string
 	label: string
@@ -26,16 +28,42 @@ interface SpellConfig {
 	castRange?: number
 }
 
+const INITIATION_SPELLS = [
+	"axe_berserkers_call",
+	"enigma_black_hole",
+	"magnataur_reverse_polarity",
+	"tidehunter_ravage",
+	"faceless_void_chronosphere",
+	"slardar_slithereen_crush",
+	"centaur_hoof_stomp",
+	"earthshaker_echo_slam",
+	"pudge_dismember",
+	"bane_fiends_grip",
+	"legion_commander_duel",
+	"batrider_flaming_lasso",
+	"primal_beast_pulverize"
+]
+
+const INITIATION_MODIFIERS = [
+	"modifier_spirit_breaker_charge_of_darkness",
+	"modifier_storm_spirit_ball_lightning",
+	"modifier_earth_spirit_rolling_boulder_caster",
+	"modifier_primal_beast_onslaught",
+	"modifier_slark_pounce"
+]
+
 const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "lion_voodoo", label: "Lion Hex", piercesBkb: false, castType: "target" },
+	{ name: "shadow_shaman_voodoo", label: "Shaman Hex", piercesBkb: false, castType: "target" },
+	{ name: "rubick_telekinesis", label: "Telekinesis", piercesBkb: false, castType: "target" },
+	{ name: "puck_waning_rift", label: "Waning Rift (Puck)", piercesBkb: false, castType: "no_target" },
 	{ name: "lion_impale", label: "Lion Earth Spike", piercesBkb: false, castType: "position", castRange: 725 },
 	{ name: "nyx_assassin_impale", label: "Impale (Nyx)", piercesBkb: false, castType: "position", castRange: 700 },
+	{ name: "nyx_assassin_spiked_carapace", label: "Carapace (Nyx)", piercesBkb: true, castType: "no_target" },
+	{ name: "dragon_knight_dragon_tail", label: "Dragon Tail", piercesBkb: false, castType: "target" },
 	{ name: "tiny_avalanche", label: "Avalanche", piercesBkb: false, castType: "position", castRange: 600 },
 	{ name: "jakiro_ice_path", label: "Ice Path", piercesBkb: false, castType: "position", castRange: 1200 },
-	{ name: "shadow_shaman_voodoo", label: "Shaman Hex", piercesBkb: false, castType: "target" },
 	{ name: "shadow_shaman_shackles", label: "Shackles", piercesBkb: false, castType: "target" },
-	{ name: "rubick_telekinesis", label: "Telekinesis", piercesBkb: false, castType: "target" },
-	{ name: "dragon_knight_dragon_tail", label: "Dragon Tail", piercesBkb: false, castType: "target" },
 	{ name: "vengefulspirit_magic_missile", label: "Magic Missile", piercesBkb: false, castType: "target" },
 	{ name: "skeleton_king_hellfire_blast", label: "Wraithfire Blast", piercesBkb: false, castType: "target" },
 	{ name: "witch_doctor_paralyzing_cask", label: "Paralyzing Cask", piercesBkb: false, castType: "target" },
@@ -51,14 +79,10 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "shadow_demon_disruption", label: "Disruption", piercesBkb: false, castType: "target" },
 	{ name: "bane_nightmare", label: "Nightmare", piercesBkb: false, castType: "target" },
 	{ name: "skywrath_mage_ancient_seal", label: "Ancient Seal", piercesBkb: false, castType: "target" },
+	{ name: "silencer_last_word", label: "Last Word (Silencer)", piercesBkb: false, castType: "target" },
+	{ name: "silencer_global_silence", label: "Global Silence", piercesBkb: true, castType: "no_target" },
+	{ name: "treant_overgrowth", label: "Overgrowth (Treant)", piercesBkb: true, castType: "no_target" },
 	{ name: "riki_smoke_screen", label: "Smoke Screen", piercesBkb: false, castType: "position", castRange: 550 },
-	{
-		name: "sniper_concussive_grenade",
-		label: "Concussive Grenade",
-		piercesBkb: false,
-		castType: "position",
-		castRange: 600
-	},
 	{ name: "drow_ranger_wave_of_silence", label: "Gust", piercesBkb: false, castType: "position", castRange: 900 },
 	{ name: "bane_fiends_grip", label: "Fiend's Grip", piercesBkb: true, castType: "target" },
 	{ name: "beastmaster_primal_roar", label: "Primal Roar", piercesBkb: true, castType: "target" },
@@ -67,7 +91,7 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "necrolyte_reapers_scythe", label: "Reaper's Scythe", piercesBkb: true, castType: "target" },
 	{ name: "earthshaker_fissure", label: "Fissure", piercesBkb: false, castType: "position", castRange: 1400 },
 	{ name: "earthshaker_echo_slam", label: "Echo Slam", piercesBkb: true, castType: "no_target", castRange: 600 },
-	{ name: "tusk_walrus_kick", label: "Walrus Kick", piercesBkb: false, castType: "target", castRange: 250 },
+	{ name: "tusk_walrus_kick", label: "Walrus Kick", piercesBkb: true, castType: "target", castRange: 250 },
 	{ name: "tusk_walrus_punch", label: "Walrus PUNCH!", piercesBkb: true, castType: "target", castRange: 150 },
 	{ name: "tiny_toss", label: "Toss (Tiny)", piercesBkb: true, castType: "target", castRange: 900 },
 	{ name: "zuus_lightning_bolt", label: "Lightning Bolt (Zeus)", piercesBkb: false, castType: "target" },
@@ -79,9 +103,22 @@ new (class AntiInitiationUtility {
 
 	// Anti Initiation Nodes
 	private readonly antiInitiationNode = this.entry.AddNode("Anti Initiation")
-	private readonly antiInitEnabled = this.antiInitiationNode.AddToggle("Enabled", true)
-	private readonly antiInitRange = this.antiInitiationNode.AddSlider("Trigger Range", 450, 200, 800)
-	private readonly antiInitSuddenOnly = this.antiInitiationNode.AddToggle("Only on Sudden Arrival", true)
+	private readonly antiInitEnabled = this.antiInitiationNode.AddToggle(
+		"Enabled",
+		true,
+		"Master toggle for Anti-Initiation"
+	)
+	private readonly antiInitRange = this.antiInitiationNode.AddSlider("Trigger Range", 500, 200, 900)
+	private readonly antiInitSuddenOnly = this.antiInitiationNode.AddToggle(
+		"Only on Sudden Arrival / Rush",
+		true,
+		"Trigger on Blink, Fog ambush, Charge, or incoming initiation spells"
+	)
+	private readonly checkCastPhase = this.antiInitiationNode.AddToggle(
+		"Interrupt Cast Phase Initiation",
+		true,
+		"Instantly disable enemy casting Call, Black Hole, RP, Ravage, etc."
+	)
 	private readonly antiInitDebug = this.antiInitiationNode.AddToggle("Draw Debug Overlay", true)
 	private readonly priorityType = this.antiInitiationNode.AddDropdown(
 		"Priority Type",
@@ -95,29 +132,31 @@ new (class AntiInitiationUtility {
 		"Items Selection",
 		[
 			"item_sheepstick",
-			"item_cyclone",
 			"item_abyssal_blade",
+			"item_cyclone",
+			"item_wind_waker",
 			"item_blink",
 			"item_manta",
 			"item_orchid",
+			"item_heavens_halberd",
+			"item_rod_of_atos",
 			"item_glimmer_cape",
 			"item_hurricane_pike",
-			"item_invis_sword",
-			"item_heavens_halberd",
-			"item_rod_of_atos"
+			"item_invis_sword"
 		],
 		new Map([
 			["item_sheepstick", true],
-			["item_cyclone", true],
 			["item_abyssal_blade", true],
+			["item_cyclone", true],
+			["item_wind_waker", true],
 			["item_blink", true],
 			["item_manta", true],
 			["item_orchid", true],
+			["item_heavens_halberd", true],
+			["item_rod_of_atos", true],
 			["item_glimmer_cape", true],
 			["item_hurricane_pike", true],
-			["item_invis_sword", true],
-			["item_heavens_halberd", true],
-			["item_rod_of_atos", true]
+			["item_invis_sword", true]
 		]),
 		"Enable or disable items for anti-initiation",
 		true
@@ -142,8 +181,8 @@ new (class AntiInitiationUtility {
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
 	}
 
-	private get hasLocalHero() {
-		return LocalPlayer?.Hero !== undefined
+	private get hasLocalHero(): boolean {
+		return LocalPlayer?.Hero !== undefined && LocalPlayer.Hero.IsValid === true
 	}
 
 	private PostDataUpdate(delta: number): void {
@@ -198,33 +237,15 @@ new (class AntiInitiationUtility {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 					}
 				}
 			},
 			{
-				enabled: this.itemsSelector.IsEnabled("item_cyclone"),
-				priority: 2,
-				names: ["item_cyclone", "item_wind_waker"],
-				displayName: "Eul's / Wind Waker",
-				piercesBkb: true, // We self-cast Eul's if they are BKB immune
-				isSelfCast: false,
-				cast: (item: Item) => {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-						issuers: [hero],
-						target: isTargetImmune ? hero.Index : enemy ? enemy.Index : hero.Index,
-						ability: item.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-				}
-			},
-			{
 				enabled: this.itemsSelector.IsEnabled("item_abyssal_blade"),
-				priority: 3,
+				priority: 2,
 				names: ["item_abyssal_blade"],
-				displayName: "Abyssal Blade",
+				displayName: "Abyssal Blade (BKB Pierce)",
 				piercesBkb: true,
 				isSelfCast: false,
 				cast: (item: Item) => {
@@ -238,7 +259,29 @@ new (class AntiInitiationUtility {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 					}
+				}
+			},
+			{
+				enabled:
+					this.itemsSelector.IsEnabled("item_cyclone") || this.itemsSelector.IsEnabled("item_wind_waker"),
+				priority: 3,
+				names: ["item_cyclone", "item_wind_waker"],
+				displayName: "Eul's / Wind Waker",
+				piercesBkb: true,
+				isSelfCast: false,
+				cast: (item: Item) => {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: isTargetImmune ? hero.Index : enemy ? enemy.Index : hero.Index,
+						ability: item.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					claimOrder()
 				}
 			},
 			{
@@ -268,6 +311,7 @@ new (class AntiInitiationUtility {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 				}
 			},
 			{
@@ -286,6 +330,7 @@ new (class AntiInitiationUtility {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 				}
 			},
 			{
@@ -306,72 +351,15 @@ new (class AntiInitiationUtility {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 					}
-				}
-			},
-			{
-				enabled: this.itemsSelector.IsEnabled("item_glimmer_cape"),
-				priority: 7,
-				names: ["item_glimmer_cape"],
-				displayName: "Glimmer Cape",
-				piercesBkb: true,
-				isSelfCast: true,
-				cast: (item: Item) => {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-						issuers: [hero],
-						target: hero.Index,
-						ability: item.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
-				}
-			},
-			{
-				enabled: this.itemsSelector.IsEnabled("item_hurricane_pike"),
-				priority: 8,
-				names: ["item_hurricane_pike"],
-				displayName: "Hurricane Pike",
-				piercesBkb: false,
-				isSelfCast: false,
-				cast: (item: Item) => {
-					if (enemy) {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-							issuers: [hero],
-							target: enemy.Index,
-							ability: item.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-					}
-				}
-			},
-			{
-				enabled: this.itemsSelector.IsEnabled("item_invis_sword"),
-				priority: 9,
-				names: ["item_invis_sword", "item_silver_edge"],
-				displayName: "Shadow Blade / Silver Edge",
-				piercesBkb: true,
-				isSelfCast: true,
-				cast: (item: Item) => {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-						issuers: [hero],
-						ability: item.Index,
-						queue: false,
-						showEffects: true,
-						isPlayerInput: false
-					})
 				}
 			},
 			{
 				enabled: this.itemsSelector.IsEnabled("item_heavens_halberd"),
-				priority: 10,
+				priority: 7,
 				names: ["item_heavens_halberd"],
-				displayName: "Heaven's Halberd",
+				displayName: "Heaven's Halberd (Disarm)",
 				piercesBkb: false,
 				isSelfCast: false,
 				cast: (item: Item) => {
@@ -385,12 +373,13 @@ new (class AntiInitiationUtility {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 					}
 				}
 			},
 			{
 				enabled: this.itemsSelector.IsEnabled("item_rod_of_atos"),
-				priority: 11,
+				priority: 8,
 				names: ["item_rod_of_atos", "item_gungir"],
 				displayName: "Atos / Gleipnir",
 				piercesBkb: false,
@@ -407,6 +396,7 @@ new (class AntiInitiationUtility {
 								showEffects: true,
 								isPlayerInput: false
 							})
+							claimOrder()
 						}
 					} else if (enemy) {
 						ExecuteOrder.PrepareOrder({
@@ -418,7 +408,69 @@ new (class AntiInitiationUtility {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 					}
+				}
+			},
+			{
+				enabled: this.itemsSelector.IsEnabled("item_glimmer_cape"),
+				priority: 9,
+				names: ["item_glimmer_cape"],
+				displayName: "Glimmer Cape",
+				piercesBkb: true,
+				isSelfCast: true,
+				cast: (item: Item) => {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: hero.Index,
+						ability: item.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					claimOrder()
+				}
+			},
+			{
+				enabled: this.itemsSelector.IsEnabled("item_hurricane_pike"),
+				priority: 10,
+				names: ["item_hurricane_pike"],
+				displayName: "Hurricane Pike",
+				piercesBkb: false,
+				isSelfCast: false,
+				cast: (item: Item) => {
+					if (enemy) {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+							issuers: [hero],
+							target: enemy.Index,
+							ability: item.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+						claimOrder()
+					}
+				}
+			},
+			{
+				enabled: this.itemsSelector.IsEnabled("item_invis_sword"),
+				priority: 11,
+				names: ["item_invis_sword", "item_silver_edge"],
+				displayName: "Shadow Blade / Silver Edge",
+				piercesBkb: true,
+				isSelfCast: true,
+				cast: (item: Item) => {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+						issuers: [hero],
+						ability: item.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					claimOrder()
 				}
 			}
 		]
@@ -433,7 +485,7 @@ new (class AntiInitiationUtility {
 		const candidates: { name: string; priorityValue: number; cast: () => void }[] = []
 		const prioritizeSpells = this.priorityType.SelectedID === 1
 
-		// 1. Collect Item Candidates (requires hero not to be muted, stunned, or hexed)
+		// 1. Collect Item Candidates
 		if (!hero.IsMuted && !hero.IsStunned && !hero.IsHexed) {
 			for (const config of itemConfigs) {
 				if (!config.enabled) {
@@ -453,9 +505,9 @@ new (class AntiInitiationUtility {
 						if (inRange) {
 							let displayName = config.displayName
 							if (item.Name === "item_cyclone") {
-								displayName = "Eul's Scepter"
+								displayName = isEulSelfCast ? "Eul's Scepter (Self-Save)" : "Eul's Scepter"
 							} else if (item.Name === "item_wind_waker") {
-								displayName = "Wind Waker"
+								displayName = isEulSelfCast ? "Wind Waker (Self-Save)" : "Wind Waker"
 							}
 							candidates.push({
 								name: displayName,
@@ -468,7 +520,7 @@ new (class AntiInitiationUtility {
 			}
 		}
 
-		// 2. Collect Spell Candidates (requires hero not to be silenced, stunned, or hexed)
+		// 2. Collect Spell Candidates
 		if (!hero.IsSilenced && !hero.IsStunned && !hero.IsHexed) {
 			for (let i = 0; i < SUPPORTED_SPELLS.length; i++) {
 				const config = SUPPORTED_SPELLS[i]
@@ -493,7 +545,10 @@ new (class AntiInitiationUtility {
 					const inRange =
 						config.castType === "position"
 							? hero.Distance2D(enemy) <= castRange
+							: config.castType === "no_target"
+							? hero.Distance2D(enemy, true) <= (config.castRange ?? 450)
 							: hero.Distance2D(enemy, true) <= castRange
+
 					if (inRange) {
 						if (config.name === "tiny_toss") {
 							const grabRadius = 275
@@ -553,6 +608,8 @@ new (class AntiInitiationUtility {
 												showEffects: true,
 												isPlayerInput: false
 											})
+											claimOrder()
+											return
 										}
 									}
 
@@ -565,6 +622,7 @@ new (class AntiInitiationUtility {
 										showEffects: true,
 										isPlayerInput: false
 									})
+									claimOrder()
 								} else if (config.castType === "position") {
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
@@ -575,6 +633,7 @@ new (class AntiInitiationUtility {
 										showEffects: true,
 										isPlayerInput: false
 									})
+									claimOrder()
 								} else if (config.castType === "no_target") {
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
@@ -584,6 +643,7 @@ new (class AntiInitiationUtility {
 										showEffects: true,
 										isPlayerInput: false
 									})
+									claimOrder()
 								}
 							},
 							priorityValue: prioritizeSpells ? i + 1 : i + 1 + 100
@@ -593,7 +653,6 @@ new (class AntiInitiationUtility {
 			}
 		}
 
-		// Sort by priority slider value (ascending: 1 first, then 2, etc.)
 		candidates.sort((a, b) => a.priorityValue - b.priorityValue)
 		return candidates
 	}
@@ -604,18 +663,39 @@ new (class AntiInitiationUtility {
 		let triggered = false
 
 		const dist2D = enemy.Distance2D(hero, true)
+		const triggerRange = this.antiInitRange.value
+
+		// 1. Blink / Sudden Teleport arrival (>300 units in 1 frame)
 		if (wasVisible) {
-			// Check if they moved > 300 units in a single frame and landed in range
-			if (lastPos && enemy.Position.Distance2D(lastPos) > 300 && dist2D <= this.antiInitRange.value) {
+			if (lastPos && enemy.Position.Distance2D(lastPos) > 300 && dist2D <= triggerRange) {
 				triggered = true
 			}
-		} else if (dist2D <= this.antiInitRange.value) {
-			// Sudden arrival from fog / invis
+		} else if (dist2D <= triggerRange) {
+			// Sudden arrival from Fog / Invisibility
 			triggered = true
 		}
 
-		// If sudden arrival toggle is off, trigger on any target in range
-		if (!this.antiInitSuddenOnly.value && dist2D <= this.antiInitRange.value) {
+		// 2. High-Speed Movement & Charge Inisiasi (Spirit Breaker Charge, Storm Ball, Primal Beast Onslaught, Slark Pounce)
+		if (!triggered && dist2D <= triggerRange) {
+			const hasInitiationModifier = INITIATION_MODIFIERS.some(mod => enemy.HasBuffByName(mod))
+			if (hasInitiationModifier) {
+				triggered = true
+			}
+		}
+
+		// 3. Cast Phase Initiation Check (Interrupting Axe Call, Enigma Black Hole, Magnus RP, Ravage, etc.)
+		if (!triggered && this.checkCastPhase.value && dist2D <= triggerRange + 150) {
+			const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
+			for (const spell of spells) {
+				if (spell.IsInAbilityPhase && INITIATION_SPELLS.includes(spell.Name)) {
+					triggered = true
+					break
+				}
+			}
+		}
+
+		// 4. Any Target in range if sudden only toggle is disabled
+		if (!this.antiInitSuddenOnly.value && dist2D <= triggerRange) {
 			triggered = true
 		}
 
@@ -623,8 +703,14 @@ new (class AntiInitiationUtility {
 			return
 		}
 
-		// Skip if target is already disabled
-		if (enemy.IsStunned || enemy.IsHexed || enemy.IsNightmared) {
+		// Skip if target is already disabled (Stunned, Hexed, Nightmared, or Cycloned)
+		if (
+			enemy.IsStunned ||
+			enemy.IsHexed ||
+			enemy.IsNightmared ||
+			enemy.HasBuffByName("modifier_eul_cyclone") ||
+			enemy.HasBuffByName("modifier_wind_waker")
+		) {
 			return
 		}
 
@@ -635,11 +721,10 @@ new (class AntiInitiationUtility {
 			return
 		}
 
-		// Execute the highest priority candidate
+		// Execute the highest priority counter
 		candidates[0].cast()
 
-		// Sleep anti-initiation to prevent action flooding
-		const delay = GameState.InputLag * 1000 + Math.randomRange(50, 150)
+		const delay = GameState.InputLag * 1000 + Math.randomRange(40, 100)
 		this.antiInitSleeper.Sleep(delay)
 	}
 
@@ -652,101 +737,73 @@ new (class AntiInitiationUtility {
 			return
 		}
 
+		const x = 50
 		let y = 180
-		RendererSDK.Text("--- Anti Initiation Debug ---", new Vector2(50, y), Color.Yellow)
-		y += 20
+		const padX = 8
+		const padY = 6
+		const textH = RendererSDK.DefaultTextSize
 
 		const enemies = EntityManager.GetEntitiesByClass(Hero).filter(
 			h => h && h.IsValid && h.IsEnemy(hero) && !h.IsIllusion && h.IsVisible && h.IsAlive
 		)
 
+		const lines: { text: string; color: Color }[] = [
+			{
+				text: `[Anti Initiation] ${this.antiInitEnabled.value ? "ACTIVE" : "DISABLED"} | Range: ${
+					this.antiInitRange.value
+				}`,
+				color: Color.Yellow
+			}
+		]
+
 		if (enemies.length === 0) {
-			RendererSDK.Text("No visible enemies found", new Vector2(50, y), Color.White)
-			y += 20
+			lines.push({ text: "  No visible enemies in vision", color: Color.LightGray })
 		} else {
 			for (const enemy of enemies) {
-				const wasVisible = this.enemyVisibility.get(enemy.Index) ?? false
 				const dist = enemy.Distance2D(hero, true)
-				RendererSDK.Text(
-					`Enemy: ${enemy.Name} | Dist: ${dist.toFixed(0)} | wasVisible: ${wasVisible} | range: ${
-						this.antiInitRange.value
+				const isInitiating =
+					INITIATION_MODIFIERS.some(m => enemy.HasBuffByName(m)) ||
+					enemy.Spells.some(s => s?.IsInAbilityPhase && INITIATION_SPELLS.includes(s.Name))
+				lines.push({
+					text: `  Enemy: ${enemy.Name} | Dist: ${dist.toFixed(0)} | Threat: ${
+						isInitiating ? "INITIATING!" : "Normal"
 					}`,
-					new Vector2(50, y),
-					Color.White
-				)
-				y += 20
+					color: isInitiating ? Color.Red : dist <= this.antiInitRange.value ? Color.Yellow : Color.White
+				})
 			}
 		}
 
-		// Active Candidate Queue (Sorted)
-		RendererSDK.Text("Active Candidate Queue (Sorted):", new Vector2(50, y), Color.Aqua)
-		y += 20
 		const testEnemy = enemies[0]
 		if (testEnemy) {
 			const isTargetImmune = testEnemy.IsMagicImmune || testEnemy.IsDebuffImmune
 			const candidates = this.getCandidates(hero, testEnemy, isTargetImmune)
-			if (candidates.length === 0) {
-				RendererSDK.Text("  No candidates ready & in range", new Vector2(50, y), Color.LightGray)
-				y += 20
-			} else {
-				for (let i = 0; i < candidates.length; i++) {
-					const cand = candidates[i]
-					const color = i === 0 ? Color.Yellow : Color.White
-					RendererSDK.Text(
-						`  ${i + 1}. ${cand.name} (Priority: ${cand.priorityValue})`,
-						new Vector2(50, y),
-						color
-					)
-					y += 20
-				}
+			if (candidates.length > 0) {
+				lines.push({ text: `  Ready Counter: ${candidates[0].name}`, color: Color.Green })
 			}
-		} else {
-			RendererSDK.Text("  (No visible enemies - queue empty)", new Vector2(50, y), Color.LightGray)
-			y += 20
 		}
 
-		// Spells Checks
-		RendererSDK.Text("Spells Detection:", new Vector2(50, y), Color.Green)
-		y += 20
-		for (const config of SUPPORTED_SPELLS) {
-			const spell: Ability | undefined = hero.GetAbilityByName(config.name)
-			if (!spell) {
-				RendererSDK.Text(`  ${config.label}: NOT FOUND`, new Vector2(50, y), Color.Red)
-				y += 20
-				continue
+		let maxW = 0
+		for (const line of lines) {
+			const sz = RendererSDK.GetTextSize(line.text, RendererSDK.DefaultFontName, RendererSDK.DefaultTextSize)
+			if (sz.x > maxW) {
+				maxW = sz.x
 			}
-			const baseCastRange = config.castRange ?? spell.CastRange
-			const castRange = baseCastRange > 0 ? baseCastRange : 600
-			const manaEnough = hero.Mana >= spell.ManaCost
-			const ready = spell.Level > 0 && spell.Cooldown <= 0.1 && manaEnough
-			const enabled = this.spellsSelector.IsEnabled(config.name)
-			const info = `Lvl: ${spell.Level} | CD: ${spell.Cooldown.toFixed(1)} | Mana: ${hero.Mana.toFixed(0)}/${
-				spell.ManaCost
-			} | Range: ${castRange} | Enabled: ${enabled} | Ready: ${ready}`
-			const color = ready && enabled ? Color.Green : Color.LightGray
-			RendererSDK.Text(`  ${config.label}: ${info}`, new Vector2(50, y), color)
-			y += 20
 		}
 
-		// Items Checks
-		RendererSDK.Text("Items Detection:", new Vector2(50, y), Color.Green)
-		y += 20
-		const dummyEnemy = enemies[0] || hero
-		const itemConfigs = this.getItemConfigs(hero, dummyEnemy, false)
-		for (const config of itemConfigs) {
-			const itemsFound = hero.Items.filter(i => config.names.includes(i.Name))
-			if (itemsFound.length === 0) {
-				continue
-			}
-			for (const item of itemsFound) {
-				const ready = item.CanBeUsable && !hero.IsMuted && hero.Mana >= item.ManaCost && item.Cooldown <= 0.1
-				const info = `Ready: ${ready} | CD: ${item.Cooldown.toFixed(1)} | Level: ${item.Level} | Usable: ${
-					item.CanBeUsable
-				}`
-				const color = ready ? Color.Green : Color.LightGray
-				RendererSDK.Text(`  ${item.Name}: ${info}`, new Vector2(50, y), color)
-				y += 20
-			}
+		const rectW = maxW + padX * 2
+		const rectH = lines.length * textH + padY * 2
+
+		RendererSDK.FilledRect(new Vector2(x - padX, y - padY), new Vector2(rectW, rectH), new Color(0, 0, 0, 220))
+		RendererSDK.OutlinedRect(
+			new Vector2(x - padX, y - padY),
+			new Vector2(rectW, rectH),
+			1.5,
+			new Color(0, 200, 255, 200)
+		)
+
+		for (const line of lines) {
+			RendererSDK.Text(line.text, new Vector2(x, y), line.color)
+			y += textH
 		}
 	}
 
