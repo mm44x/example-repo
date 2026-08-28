@@ -1,5 +1,6 @@
 import {
 	Ability,
+	Color,
 	Creep,
 	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
@@ -11,6 +12,8 @@ import {
 	InputManager,
 	LocalPlayer,
 	Menu,
+	ParticleAttachment,
+	ParticlesSDK,
 	ProjectileManager,
 	TickSleeper,
 	Tower,
@@ -57,6 +60,20 @@ class CustomLastHit {
 		"Select which action to prioritize when both are possible"
 	)
 	private readonly spellsEnabled = this.entry.AddToggle("Use Spells for Last Hit", false)
+
+	// Visual Attack Range
+	private readonly showAttackRange = this.entry.AddToggle(
+		"Show Attack Range",
+		true,
+		"Draw a particle circle showing your hero's current attack range"
+	)
+	private readonly attackRangeMode = this.entry.AddDropdown(
+		"Attack Range Mode",
+		["Only When Holding Key", "Always Active"],
+		0,
+		"Choose whether the attack range circle is shown only on hold key or always"
+	)
+
 	private readonly cancelBackswing = this.entry.AddToggle(
 		"Cancel Backswing (Smooth Orbwalk)",
 		true,
@@ -84,6 +101,8 @@ class CustomLastHit {
 	)
 	private readonly harassSearchRadius = this.harassNode.AddSlider("Harass Search Radius", 800, 300, 1500)
 
+	private readonly pSDK = new ParticlesSDK()
+
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
@@ -94,6 +113,26 @@ class CustomLastHit {
 		lastAttackTargetIdx = -1
 		lastAttackOrderTime = 0
 		lastDeAggroTime = 0
+		this.pSDK.DestroyAll()
+	}
+
+	private updateAttackRangeDraw(hero: Hero): void {
+		const isKeyPressed = this.lastHitKey.isPressed || this.spellsKey.isPressed
+		const shouldDraw =
+			this.showAttackRange.value &&
+			hero.IsValid &&
+			hero.IsAlive &&
+			(this.attackRangeMode.SelectedID === 1 || isKeyPressed)
+
+		if (shouldDraw) {
+			const attackRange = hero.GetAttackRange(undefined, 0, false)
+			this.pSDK.DrawCircle("hero_attack_range", hero, attackRange, {
+				Color: new Color(0, 255, 120, 200),
+				Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+			})
+		} else {
+			this.pSDK.DestroyByKey("hero_attack_range")
+		}
 	}
 
 	/**
@@ -412,6 +451,7 @@ class CustomLastHit {
 		}
 
 		if (!this.enabled.value) {
+			this.pSDK.DestroyByKey("hero_attack_range")
 			return
 		}
 
@@ -421,8 +461,12 @@ class CustomLastHit {
 		}
 		const hero = player.Hero
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			this.pSDK.DestroyByKey("hero_attack_range")
 			return
 		}
+
+		// Always update the attack range visual
+		this.updateAttackRangeDraw(hero)
 
 		const isLastHitKeyPressed = this.lastHitKey.isPressed
 		const isSpellsKeyPressed = this.spellsKey.isPressed
