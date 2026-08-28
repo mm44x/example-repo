@@ -26,9 +26,9 @@ new (class AutoBanUtility {
 		"How to prioritize bans when multiple heroes are selected"
 	)
 	private readonly debugToggle = this.tree.AddToggle(
-		"Debug Draw",
-		false,
-		"Display drafting & ban state on screen",
+		"Debug Overlay",
+		true,
+		"Display drafting & ban state on screen during hero selection",
 		10
 	)
 
@@ -43,12 +43,12 @@ new (class AutoBanUtility {
 	private universalSelector?: Menu.ImageSelector
 
 	private populated = false
-	private hasBannedThisDraft = false
+	private banAttemptCount = 0
 	private lastBanAttemptTime = 0
 	private readonly sleeper = new TickSleeper()
 
 	private debugLines: string[] = []
-	private debugLastBanResult = ""
+	private debugStatus = ""
 
 	constructor() {
 		EventsSDK.on("UnitAbilityDataUpdated", this.populateAndRefresh.bind(this))
@@ -66,19 +66,26 @@ new (class AutoBanUtility {
 	}
 
 	private onDraw(): void {
-		if (!this.debugToggle.value || this.debugLines.length === 0) {
+		if (!this.debugToggle.value) {
 			return
 		}
-		const padX = 8
-		const padY = 6
-
-		let maxW = 0
-		const totalLines = this.debugLines.length + (this.debugLastBanResult ? 1 : 0)
-		const allText = [...this.debugLines]
-		if (this.debugLastBanResult) {
-			allText.push(this.debugLastBanResult)
+		const state = GameRules?.GameState
+		if (!this.isSelectionState(state)) {
+			return
 		}
 
+		const padX = 10
+		const padY = 8
+		const textH = RendererSDK.DefaultTextSize
+		const x = 50,
+			y = 200
+
+		const allText = [...this.debugLines]
+		if (this.debugStatus) {
+			allText.push(`  Status: ${this.debugStatus}`)
+		}
+
+		let maxW = 0
 		for (const line of allText) {
 			const sz = RendererSDK.GetTextSize(line, RendererSDK.DefaultFontName, RendererSDK.DefaultTextSize)
 			if (sz.x > maxW) {
@@ -86,27 +93,23 @@ new (class AutoBanUtility {
 			}
 		}
 
-		const textH = RendererSDK.DefaultTextSize
-		const x = 50,
-			y = 280
-		const rectW = maxW + padX * 2
-		const rectH = totalLines * textH + padY * 2
+		const rectW = Math.max(maxW + padX * 2, 280)
+		const rectH = allText.length * textH + padY * 2
 
 		RendererSDK.FilledRect(new Vector2(x - padX, y - padY), new Vector2(rectW, rectH), new Color(0, 0, 0, 220))
 		RendererSDK.OutlinedRect(
 			new Vector2(x - padX, y - padY),
 			new Vector2(rectW, rectH),
 			1.5,
-			new Color(255, 60, 60, 200)
+			new Color(255, 60, 60, 220)
 		)
 
 		let ly = y
-		for (const line of this.debugLines) {
-			RendererSDK.Text(line, new Vector2(x, ly), Color.White)
+		for (let i = 0; i < allText.length; i++) {
+			const line = allText[i]
+			const color = i === 0 ? Color.Yellow : i === allText.length - 1 ? Color.Green : Color.White
+			RendererSDK.Text(line, new Vector2(x, ly), color)
 			ly += textH
-		}
-		if (this.debugLastBanResult) {
-			RendererSDK.Text(this.debugLastBanResult, new Vector2(x, ly), new Color(255, 220, 0, 255))
 		}
 	}
 
@@ -118,7 +121,8 @@ new (class AutoBanUtility {
 			state === DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION ||
 			state === DOTAGameState.DOTA_GAMERULES_STATE_PLAYER_DRAFT ||
 			state === DOTAGameState.DOTA_GAMERULES_STATE_CUSTOM_GAME_SETUP ||
-			state === DOTAGameState.DOTA_GAMERULES_STATE_STRATEGY_TIME
+			state === DOTAGameState.DOTA_GAMERULES_STATE_STRATEGY_TIME ||
+			state === DOTAGameState.DOTA_GAMERULES_STATE_WAIT_FOR_PLAYERS_TO_LOAD
 		)
 	}
 
@@ -128,7 +132,16 @@ new (class AutoBanUtility {
 			return false
 		}
 
-		// 1. Direct Turbo rules check
+		const state = gameRules.GameState
+		if (
+			state !== DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION &&
+			state !== DOTAGameState.DOTA_GAMERULES_STATE_CUSTOM_GAME_SETUP &&
+			state !== DOTAGameState.DOTA_GAMERULES_STATE_PLAYER_DRAFT
+		) {
+			return false
+		}
+
+		// 1. Direct Turbo rules entity check
 		if (TurboHeroPickRules && TurboHeroPickRules.IsValid) {
 			return TurboHeroPickRules.Phase === DOTACustomHeroPickRulesPhase.Ban
 		}
@@ -138,21 +151,27 @@ new (class AutoBanUtility {
 			return true
 		}
 
-		// 3. Fallback check for Turbo / All Draft selection start
-		const state = gameRules.GameState
-		if (state === DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION) {
-			if (gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_TURBO) {
-				return TurboHeroPickRules?.Phase !== DOTACustomHeroPickRulesPhase.Pick
-			}
+		// 3. Fallback for Turbo mode
+		if (gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_TURBO) {
+			// In Turbo mode, if pick rules haven't entered Pick phase (1), it's Ban phase
+			return TurboHeroPickRules?.Phase !== DOTACustomHeroPickRulesPhase.Pick
+		}
+
+		// 4. All Draft fallback
+		if (
+			gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_ALL_DRAFT ||
+			gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_AP
+		) {
 			return gameRules.AllDraftPhase === 0
 		}
 
-		return false
+		return true
 	}
 
 	private onGameStateChanged(state: DOTAGameState): void {
 		if (this.isSelectionState(state)) {
-			this.hasBannedThisDraft = false
+			this.banAttemptCount = 0
+			this.lastBanAttemptTime = 0
 			this.syncNativeBans()
 			this.executeDraftBans()
 		}
@@ -165,6 +184,8 @@ new (class AutoBanUtility {
 
 		const state = GameRules?.GameState
 		if (this.isSelectionState(state)) {
+			// Keep native ban hook synchronized
+			this.syncNativeBans()
 			this.updateDebugInfo()
 
 			if (this.enabled.value && this.isBanPhaseActive() && !this.sleeper.Sleeping) {
@@ -174,7 +195,7 @@ new (class AutoBanUtility {
 	}
 
 	private onGameEnded(): void {
-		this.hasBannedThisDraft = false
+		this.banAttemptCount = 0
 		this.lastBanAttemptTime = 0
 		this.sleeper.Sleep(0)
 	}
@@ -206,27 +227,23 @@ new (class AutoBanUtility {
 
 	/**
 	 * Synchronizes the target ban list with the native C++ engine core.
-	 * This must be called anytime options change, BEFORE draft starts.
 	 */
 	private syncNativeBans(): void {
 		if (!this.enabled.value) {
 			ToggleBanHeroes(false)
-			this.debugLastBanResult = "NATIVE: Disabled (Cleared)"
 			return
 		}
 
 		const heroIds = this.getSelectedHeroIds()
 		if (heroIds.length > 0) {
 			ToggleBanHeroes(heroIds)
-			this.debugLastBanResult = `NATIVE SYNC: [${heroIds.join(", ")}] (${heroIds.length} heroes)`
 		} else {
 			ToggleBanHeroes(false)
-			this.debugLastBanResult = "NATIVE: No heroes selected"
 		}
 	}
 
 	/**
-	 * Active in-draft execution for Turbo, Captains Mode, and Custom Games.
+	 * Multi-vector in-draft execution for Turbo Mode and Custom Games.
 	 */
 	private executeDraftBans(): void {
 		if (!this.enabled.value) {
@@ -235,6 +252,7 @@ new (class AutoBanUtility {
 
 		const heroIds = this.getSelectedHeroIds()
 		if (heroIds.length === 0) {
+			this.debugStatus = "No heroes selected in menu"
 			return
 		}
 
@@ -243,15 +261,16 @@ new (class AutoBanUtility {
 		const availableIds = heroIds.filter(id => !alreadyBanned.includes(id))
 
 		if (availableIds.length === 0) {
+			this.debugStatus = `Target heroes already banned: [${heroIds.join(", ")}]`
 			return
 		}
 
 		const now = Date.now()
-		if (this.hasBannedThisDraft && now - this.lastBanAttemptTime < 2000) {
+		if (now - this.lastBanAttemptTime < 350) {
 			return
 		}
 
-		// Re-enforce native core hook
+		// Re-assert native core hook with available target IDs
 		ToggleBanHeroes(availableIds)
 
 		const strategy = this.banStrategy.SelectedID
@@ -261,7 +280,7 @@ new (class AutoBanUtility {
 			// Ban First Available
 			targetIds = [availableIds[0]]
 		} else if (strategy === 1) {
-			// Ban All Selected
+			// Ban All Selected (Turbo Mode sends all selected candidates)
 			targetIds = availableIds
 		} else if (strategy === 2) {
 			// Random From Selected
@@ -269,19 +288,51 @@ new (class AutoBanUtility {
 			targetIds = [availableIds[randomIndex]]
 		}
 
-		// Send direct console ban commands
+		// Multi-vector execution across Game Coordinator, Panorama UI, and Custom Game Events
 		for (const id of targetIds) {
 			const heroName = UnitData.GetHeroNameByID(id)
-			if (heroName) {
-				GameState.ExecuteCommand(`dota_hero_ban ${heroName}`)
+
+			// Vector 1: Native C++ core hook is active via ToggleBanHeroes
+
+			// Vector 2: CustomGameEvents server events
+			try {
+				if (typeof CustomGameEvents !== "undefined" && CustomGameEvents) {
+					const eventMap = new Map<string, any>()
+					eventMap.set("hero_id", id)
+					eventMap.set("hero_name", heroName)
+					CustomGameEvents.FireEventToServer("dota_hero_ban", eventMap)
+
+					const banEvent = new Map<string, any>()
+					banEvent.set("hero_id", id)
+					CustomGameEvents.FireEventToServer("custom_hero_pick_rules_hero_banned", banEvent)
+					CustomGameEvents.FireEventToServer("turbo_hero_banned", banEvent)
+				}
+			} catch {
+				// Ignore if not supported in current context
 			}
-			GameState.ExecuteCommand(`dota_hero_ban ${id}`)
+
+			// Vector 3: Panorama UI event dispatch
+			try {
+				if (typeof Panorama !== "undefined" && Panorama) {
+					Panorama.DispatchEventAsync("DOTACustomHeroPickRulesHeroBanned", undefined, 0)
+					Panorama.DispatchEventAsync("DOTAHeroSelected", undefined, 0)
+				}
+			} catch {
+				// Ignore if not supported in current context
+			}
+
+			// Vector 4: Console command triggers
+			if (heroName) {
+				GameState.ExecuteCommand(`dota_select_hero ${heroName}`)
+			}
 		}
 
-		this.hasBannedThisDraft = true
+		this.banAttemptCount++
 		this.lastBanAttemptTime = now
-		this.debugLastBanResult = `EXEC BAN: [${targetIds.join(", ")}] via Command & Native`
-		this.sleeper.Sleep(1000)
+		this.debugStatus = `Banning [${targetIds
+			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
+			.join(", ")}] (Attempt #${this.banAttemptCount})`
+		this.sleeper.Sleep(400)
 	}
 
 	private updateDebugInfo(): void {
@@ -289,14 +340,17 @@ new (class AutoBanUtility {
 		const gameState = gameRules?.GameState
 		const gameMode = gameRules?.GameMode
 		const isBan = this.isBanPhaseActive()
+		const selectedIds = this.getSelectedHeroIds()
+		const selectedNames = selectedIds
+			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
+			.join(", ")
 
 		this.debugLines = [
-			`[AutoBan] Enabled=${this.enabled.value} | Strategy=${this.banStrategy.SelectedID}`,
-			`  GameState=${gameState} (2=HERO_SEL)`,
-			`  GameMode=${gameMode} (23=TURBO, 15=CUSTOM)`,
-			`  IsBanPhaseActive=${isBan}`,
-			`  TurboPhase=${TurboHeroPickRules?.Phase}`,
-			`  BannedInGame=[${gameRules?.BannedHeroesIDs?.join(", ") ?? ""}]`
+			`[Auto Ban Turbo/AllDraft] Enabled=${this.enabled.value}`,
+			`  Selected (${selectedIds.length}): [${selectedNames || "NONE"}]`,
+			`  GameState=${gameState} | Mode=${gameMode} (23=Turbo)`,
+			`  IsBanPhase=${isBan} | TurboPhase=${TurboHeroPickRules?.Phase}`,
+			`  Server Banned IDs: [${gameRules?.BannedHeroesIDs?.join(", ") ?? ""}]`
 		]
 	}
 
