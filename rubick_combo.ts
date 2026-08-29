@@ -12,16 +12,21 @@ import {
 	ImageData,
 	InputEventSDK,
 	InputManager,
+	Item,
 	LocalPlayer,
 	Menu,
+	ParticleAttachment,
+	ParticlesSDK,
 	Rectangle,
 	RendererSDK,
 	TickSleeper,
 	Vector2,
+	Vector3,
 	VKeys,
 	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
 
+import { claimOrder } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
 
 const NATIVE_SPELLS = [
@@ -41,6 +46,20 @@ const NATIVE_SPELLS = [
 	"attribute_bonus"
 ]
 
+const COMBO_ITEMS = [
+	"item_blink",
+	"item_sheepstick",
+	"item_orchid",
+	"item_bloodthorn",
+	"item_nullifier",
+	"item_rod_of_atos",
+	"item_ethereal_blade",
+	"item_veil_of_discord",
+	"item_shivas_guard",
+	"item_dagon",
+	"item_black_king_bar"
+]
+
 new (class RubickCombo {
 	private readonly entry = Menu.AddEntry("mm44x")
 		.AddNode("Combo Heroes", "menu/icons/juggernaut.svg")
@@ -48,6 +67,47 @@ new (class RubickCombo {
 
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Rubick combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
+	private readonly lockTargetEnabled = this.entry.AddToggle(
+		"Lock Target During Combo",
+		true,
+		"Locks onto a single target hero when holding the combo key"
+	)
+
+	private readonly itemsNode = this.entry.AddNode("Items Integration")
+	private readonly itemsSelector = this.itemsNode.AddImageSelector(
+		"Use Items",
+		COMBO_ITEMS,
+		new Map([
+			["item_blink", true],
+			["item_sheepstick", true],
+			["item_orchid", true],
+			["item_bloodthorn", true],
+			["item_nullifier", true],
+			["item_rod_of_atos", true],
+			["item_ethereal_blade", true],
+			["item_veil_of_discord", true],
+			["item_shivas_guard", true],
+			["item_dagon", true],
+			["item_black_king_bar", true]
+		]),
+		"Enable or disable items for Rubick combo"
+	)
+
+	private readonly blinkMode = this.itemsNode.AddDropdown(
+		"Blink Dagger Usage",
+		["Blink Directly to Target", "Blink Max Range Towards Target", "Disabled"],
+		0,
+		"How Blink Dagger initiates on the target"
+	)
+
+	private readonly telekinesisNode = this.entry.AddNode("Telekinesis Land Options")
+	private readonly telekinesisLandMode = this.telekinesisNode.AddDropdown(
+		"Telekinesis Land Direction",
+		["Pull Towards Rubick / Allies", "Throw Towards Nearest Enemy (AoE Stun)", "Towards Cursor", "Disabled"],
+		0,
+		"Where to drop the lifted enemy with Telekinesis Land"
+	)
+
 	private readonly smartOrbWalkEnabled = this.entry.AddToggle(
 		"Enable Smart Orb Walk",
 		true,
@@ -58,7 +118,7 @@ new (class RubickCombo {
 		80,
 		10,
 		100,
-		5,
+		0,
 		"Target distance percentage of attack range to maintain during Orb Walk"
 	)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
@@ -95,20 +155,19 @@ new (class RubickCombo {
 
 	private readonly sleeper = new TickSleeper()
 	private readonly stealSleeper = new TickSleeper()
+	private readonly pSDK = new ParticlesSDK()
 
 	private isDraggingHud = false
 	private dragOffsetX = 0
 	private dragOffsetY = 0
 	private dragSpellName: string | undefined = undefined
 	private firstFrameCleanup = true
+	private lockedTarget: Hero | undefined = undefined
 
 	constructor() {
 		this.autoStealGrid = this.autoStealNode.AddDynamicImageSelector("Spells", [], new Map())
 		this.autoCastGrid = this.autoCastNode.AddDynamicImageSelector("Spells", [], new Map())
 
-		// Immediately strip any stale spell data loaded from config
-		// (leftover from previous game or F7 reload). Grids repopulate
-		// dynamically in PostDataUpdate each frame.
 		this.autoStealGrid.enabledValues.clear()
 		this.autoStealGrid.values.length = 0
 		this.autoStealGrid.Update()
@@ -119,11 +178,10 @@ new (class RubickCombo {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
 		defaultCombo.set("rubick_telekinesis", [true, true, true, 0])
 		defaultCombo.set("rubick_fade_bolt", [true, true, true, 1])
-		defaultCombo.set("rubick_spell_steal", [true, true, true, 2])
 
 		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
-			"Combo Order",
-			["rubick_telekinesis", "rubick_fade_bolt", "rubick_spell_steal"],
+			"Skill Order",
+			["rubick_telekinesis", "rubick_fade_bolt"],
 			defaultCombo
 		)
 
@@ -146,10 +204,9 @@ new (class RubickCombo {
 		this.isDraggingHud = false
 		this.dragSpellName = undefined
 		this.firstFrameCleanup = true
+		this.lockedTarget = undefined
+		this.pSDK.DestroyAll()
 
-		// Clear grid data instead of recreating grids.
-		// Recreating creates duplicate entries in Menu tree that
-		// persist stale spell data across games via config save/load.
 		if (this.autoStealGrid) {
 			this.autoStealGrid.enabledValues.clear()
 			this.autoStealGrid.values.length = 0
@@ -163,6 +220,18 @@ new (class RubickCombo {
 		if (this.comboSequenceGrid) {
 			this.comboSequenceGrid.ResetToDefault()
 		}
+	}
+
+	private getSortedAutoStealSpells(): string[] {
+		if (!this.autoStealGrid) {
+			return []
+		}
+		const entries = [...this.autoStealGrid.enabledValues.entries()] as [
+			string,
+			[boolean, boolean, boolean, number]
+		][]
+		entries.sort((a, b) => a[1][3] - b[1][3])
+		return entries.map(e => e[0])
 	}
 
 	private IsAbilityVisibleOnHUD(abil: Ability | undefined): abil is Ability {
@@ -182,6 +251,322 @@ new (class RubickCombo {
 		adjusted.pos2.y += oy + oh
 
 		return adjusted
+	}
+
+	private getItem(hero: Hero, baseName: string): Item | undefined {
+		for (const item of hero.Items) {
+			if (item && item.IsValid && item.Name.startsWith(baseName)) {
+				return item
+			}
+		}
+		return undefined
+	}
+
+	private executeTelekinesisLand(hero: Hero, target: Hero): boolean {
+		const landAbil = hero.GetAbilityByName("rubick_telekinesis_land")
+		if (!landAbil || !landAbil.IsValid || landAbil.IsHidden || landAbil.Level <= 0 || landAbil.Cooldown > 0.1) {
+			return false
+		}
+
+		const mode = this.telekinesisLandMode.SelectedID
+		if (mode === 3) {
+			return false
+		}
+
+		let landPos: Vector3 | undefined
+
+		if (mode === 0) {
+			// Pull towards Rubick / Allies
+			const dir = hero.Position.Subtract(target.Position).Normalize()
+			landPos = target.Position.Add(dir.MultiplyScalar(350))
+		} else if (mode === 1) {
+			// Throw towards nearest other enemy for AoE secondary stun
+			let nearestOtherEnemy: Hero | undefined
+			let minDist = Infinity
+			for (const other of EntityManager.GetEntitiesByClass(Hero)) {
+				if (
+					other.IsValid &&
+					other.IsAlive &&
+					other.IsVisible &&
+					other.IsEnemy(hero) &&
+					other !== target &&
+					!other.IsIllusion
+				) {
+					const dist = target.Distance2D(other)
+					if (dist < 600 && dist < minDist) {
+						minDist = dist
+						nearestOtherEnemy = other
+					}
+				}
+			}
+			if (nearestOtherEnemy) {
+				const dir = nearestOtherEnemy.Position.Subtract(target.Position).Normalize()
+				landPos = target.Position.Add(dir.MultiplyScalar(Math.min(350, target.Distance2D(nearestOtherEnemy))))
+			} else {
+				const dir = hero.Position.Subtract(target.Position).Normalize()
+				landPos = target.Position.Add(dir.MultiplyScalar(350))
+			}
+		} else if (mode === 2) {
+			// Towards Cursor
+			const mousePos = InputManager.CursorOnWorld
+			const dir = mousePos.Subtract(target.Position).Normalize()
+			landPos = target.Position.Add(dir.MultiplyScalar(350))
+		}
+
+		if (landPos) {
+			claimOrder()
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+				issuers: [hero],
+				position: landPos,
+				ability: landAbil.Index,
+				queue: false,
+				showEffects: true,
+				isPlayerInput: false
+			})
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+			return true
+		}
+
+		return false
+	}
+
+	private executeItems(hero: Hero, bestTarget: Hero, isTargetImmune: boolean): boolean {
+		// 1. BLINK DAGGER
+		if (this.itemsSelector.IsEnabled("item_blink") && this.blinkMode.SelectedID !== 2) {
+			const blink =
+				this.getItem(hero, "item_blink") ||
+				this.getItem(hero, "item_arcane_blink") ||
+				this.getItem(hero, "item_swift_blink") ||
+				this.getItem(hero, "item_overwhelming_blink")
+
+			if (blink && blink.Cooldown <= 0.1) {
+				const dist = hero.Distance2D(bestTarget)
+				if (dist > 400 && dist <= 1200) {
+					let blinkPos = bestTarget.Position.Clone()
+					if (this.blinkMode.SelectedID === 1) {
+						const dir = bestTarget.Position.Subtract(hero.Position).Normalize()
+						blinkPos = hero.Position.Add(dir.MultiplyScalar(1150))
+					}
+
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: blinkPos,
+						ability: blink.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+					return true
+				}
+			}
+		}
+
+		// 2. BLACK KING BAR
+		if (this.itemsSelector.IsEnabled("item_black_king_bar")) {
+			const bkb = this.getItem(hero, "item_black_king_bar")
+			if (bkb && bkb.Cooldown <= 0.1 && hero.Distance2D(bestTarget) <= 800) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+					issuers: [hero],
+					ability: bkb.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 3. SCYTHE OF VYSE (HEX)
+		if (this.itemsSelector.IsEnabled("item_sheepstick") && !isTargetImmune) {
+			const hex = this.getItem(hero, "item_sheepstick")
+			if (hex && hex.Cooldown <= 0.1 && hero.Mana >= hex.ManaCost && hero.Distance2D(bestTarget) <= 800) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: hex.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 4. ORCHID / BLOODTHORN
+		if (
+			(this.itemsSelector.IsEnabled("item_orchid") || this.itemsSelector.IsEnabled("item_bloodthorn")) &&
+			!isTargetImmune
+		) {
+			const silence = this.getItem(hero, "item_bloodthorn") || this.getItem(hero, "item_orchid")
+			if (
+				silence &&
+				silence.Cooldown <= 0.1 &&
+				hero.Mana >= silence.ManaCost &&
+				hero.Distance2D(bestTarget) <= 900
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: silence.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 5. NULLIFIER
+		if (this.itemsSelector.IsEnabled("item_nullifier") && !isTargetImmune) {
+			const nullifier = this.getItem(hero, "item_nullifier")
+			if (
+				nullifier &&
+				nullifier.Cooldown <= 0.1 &&
+				hero.Mana >= nullifier.ManaCost &&
+				hero.Distance2D(bestTarget) <= 900
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: nullifier.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 6. ROD OF ATOS / GLEIPNIR
+		if (this.itemsSelector.IsEnabled("item_rod_of_atos") && !isTargetImmune) {
+			const atos = this.getItem(hero, "item_gungir") || this.getItem(hero, "item_rod_of_atos")
+			if (atos && atos.Cooldown <= 0.1 && hero.Mana >= atos.ManaCost && hero.Distance2D(bestTarget) <= 1100) {
+				claimOrder()
+				if (atos.Name === "item_gungir") {
+					const castPos = bestTarget.Position.Clone()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: castPos,
+						ability: atos.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				} else {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: bestTarget.Index,
+						ability: atos.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				}
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 7. ETHEREAL BLADE
+		if (this.itemsSelector.IsEnabled("item_ethereal_blade") && !isTargetImmune) {
+			const eblade = this.getItem(hero, "item_ethereal_blade")
+			if (
+				eblade &&
+				eblade.Cooldown <= 0.1 &&
+				hero.Mana >= eblade.ManaCost &&
+				hero.Distance2D(bestTarget) <= 800
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: eblade.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 8. VEIL OF DISCORD
+		if (this.itemsSelector.IsEnabled("item_veil_of_discord") && !isTargetImmune) {
+			const veil = this.getItem(hero, "item_veil_of_discord")
+			if (veil && veil.Cooldown <= 0.1 && hero.Mana >= veil.ManaCost && hero.Distance2D(bestTarget) <= 1000) {
+				const castPos = bestTarget.Position.Clone()
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+					issuers: [hero],
+					position: castPos,
+					ability: veil.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 9. SHIVA'S GUARD
+		if (this.itemsSelector.IsEnabled("item_shivas_guard") && !isTargetImmune) {
+			const shiva = this.getItem(hero, "item_shivas_guard")
+			if (shiva && shiva.Cooldown <= 0.1 && hero.Mana >= shiva.ManaCost && hero.Distance2D(bestTarget) <= 900) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+					issuers: [hero],
+					ability: shiva.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// 10. DAGON
+		if (this.itemsSelector.IsEnabled("item_dagon") && !isTargetImmune) {
+			const dagon = this.getItem(hero, "item_dagon")
+			if (dagon && dagon.Cooldown <= 0.1 && hero.Mana >= dagon.ManaCost && hero.Distance2D(bestTarget) <= 800) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: dagon.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		return false
 	}
 
 	private executeStolenSpells(
@@ -209,6 +594,7 @@ new (class RubickCombo {
 					const castRange = stolenSpell.CastRange > 0 ? stolenSpell.CastRange : 600
 
 					if (isNoTarget && hero.Distance2D(bestTarget) <= castRange) {
+						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 							issuers: [hero],
@@ -221,8 +607,8 @@ new (class RubickCombo {
 						return true
 					} else if (isPosition && hero.Distance2D(bestTarget) <= castRange) {
 						const castPos = bestTarget.Position.Clone()
-						castPos.z = WorldUtils.GetHeightForLocation(castPos.x, castPos.y)
 
+						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 							issuers: [hero],
@@ -235,6 +621,7 @@ new (class RubickCombo {
 						this.sleeper.Sleep(GameState.InputLag * 1000 + stolenSpell.CastPoint * 1000 + 100)
 						return true
 					} else if (isTarget && hero.Distance2D(bestTarget) <= castRange) {
+						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 							issuers: [hero],
@@ -263,7 +650,6 @@ new (class RubickCombo {
 			return
 		}
 
-		// Ensure grids are initialized
 		if (!this.autoStealGrid || !this.autoCastGrid || !this.comboSequenceGrid) {
 			return
 		}
@@ -291,7 +677,6 @@ new (class RubickCombo {
 						if (visibleIndex < hud.AbilitiesRects.length) {
 							const rect = this.getAdjustedRect(hud.AbilitiesRects[visibleIndex])
 
-							// Inset the outline box by 2 pixels to fit nicely inside the ability icon slot
 							const insetRect = rect.Clone()
 							insetRect.pos1.x += 2
 							insetRect.pos1.y += 2
@@ -300,7 +685,6 @@ new (class RubickCombo {
 
 							RendererSDK.OutlinedRect(insetRect.pos1, insetRect.Size, 2, Color.Green)
 
-							// Calculate coordinates to center "AUTO" text at the bottom half of the ability slot
 							const fontName = "PTSans"
 							const fontSize = 11
 							const fontWeight = 800
@@ -311,7 +695,6 @@ new (class RubickCombo {
 							const textY = rect.pos2.y - textSize.y - 4
 							const textPos = new Vector2(textX, textY)
 
-							// Draw semi-transparent black background behind text for readability
 							const bgPaddingX = 4
 							const bgPaddingY = 1
 							const bgPos = new Vector2(textX - bgPaddingX, textY - bgPaddingY)
@@ -336,7 +719,7 @@ new (class RubickCombo {
 			if (!this.autoStealGrid) {
 				return
 			}
-			const values = this.autoStealGrid.values
+			const values = this.getSortedAutoStealSpells()
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
 			const cols = 5
@@ -354,11 +737,9 @@ new (class RubickCombo {
 			const panelPos = new Vector2(panelX, panelY)
 			const panelSize = new Vector2(panelWidth, panelHeight)
 
-			// 1. Draw Panel Background (semi-transparent dark with white outline)
 			RendererSDK.FilledRect(panelPos, panelSize, Color.Black.SetA(160))
 			RendererSDK.OutlinedRect(panelPos, panelSize, 1, Color.White.SetA(60))
 
-			// 2. Draw Header Bar & Title
 			const headerRectSize = new Vector2(panelWidth, headerHeight)
 			RendererSDK.FilledRect(panelPos, headerRectSize, Color.Black.SetA(200))
 			RendererSDK.OutlinedRect(panelPos, headerRectSize, 1, Color.White.SetA(60))
@@ -381,7 +762,6 @@ new (class RubickCombo {
 				true
 			)
 
-			// 3. Draw Spell Icons
 			if (N === 0) {
 				const noSpellsText = "No enemy spells detected"
 				const noSpellsSize = RendererSDK.GetTextSize(noSpellsText, fontName, 10, 400, false)
@@ -402,17 +782,14 @@ new (class RubickCombo {
 					const path = ImageData.GetSpellTexture(spellName)
 					const isEnabled = this.autoStealGrid.IsEnabled(spellName)
 
-					// Draw spell icon (grayscaled if disabled)
 					RendererSDK.Image(path, iconPos, -1, iconRectSize, Color.White, 0, undefined, !isEnabled)
 
-					// Draw border indicators (green if enabled, red if disabled)
 					if (isEnabled) {
 						RendererSDK.OutlinedRect(iconPos, iconRectSize, 2, Color.Green)
 					} else {
 						RendererSDK.OutlinedRect(iconPos, iconRectSize, 1, Color.Red.SetA(180))
 					}
 
-					// Draw priority number badge on top-left of the icon
 					const prioText = `${i + 1}`
 					const prioSize = RendererSDK.GetTextSize(prioText, fontName, 9, 800, false)
 					const badgePaddingX = 3
@@ -471,12 +848,11 @@ new (class RubickCombo {
 
 		const cursorPos = InputManager.CursorOnScreen
 
-		// ------------------ FLOATING HUD PANEL CLICK INTERACTION ------------------
 		if (this.autoStealHudEnabled.value) {
 			if (!this.autoStealGrid) {
 				return
 			}
-			const values = this.autoStealGrid.values
+			const values = this.getSortedAutoStealSpells()
 			const iconSize = this.autoStealHudIconSize.value
 			const gap = 6
 			const cols = 5
@@ -490,14 +866,12 @@ new (class RubickCombo {
 			const headerHeight = 22
 			const panelHeight = headerHeight + rows * (iconSize + gap) + gap
 
-			// Bounding box of the floating panel
 			const panelRect = new Rectangle(
 				new Vector2(panelX, panelY),
 				new Vector2(panelX + panelWidth, panelY + panelHeight)
 			)
 
 			if (panelRect.Contains(cursorPos)) {
-				// Check if clicked on header for dragging
 				const headerRect = new Rectangle(
 					new Vector2(panelX, panelY),
 					new Vector2(panelX + panelWidth, panelY + headerHeight)
@@ -510,7 +884,6 @@ new (class RubickCombo {
 					return true
 				}
 
-				// Check which spell icon was clicked
 				const isCtrlHeld = InputManager.IsKeyDown(VKeys.CONTROL)
 				for (let i = 0; i < N; i++) {
 					const spellName = values[i]
@@ -532,20 +905,18 @@ new (class RubickCombo {
 							const enabledValues = this.autoStealGrid.enabledValues.get(spellName)
 							if (enabledValues) {
 								enabledValues[0] = !enabledValues[0]
+								this.autoStealGrid.Update()
 								Menu.Base.SaveConfigASAP = true
 							}
 						}
 						break
 					}
 				}
-				// Consume click event to prevent unit from moving in-game
 				return true
 			}
 		}
 
-		// ------------------ LOWER HUD SHIFT+CLICK INTERACTION ------------------
 		if (!InputManager.IsKeyDown(16)) {
-			// Shift key code
 			return
 		}
 
@@ -601,12 +972,11 @@ new (class RubickCombo {
 				this.dragSpellName = undefined
 
 				if (this.autoStealHudEnabled.value) {
-					// Ensure autoStealGrid is initialized
 					if (!this.autoStealGrid) {
 						return true
 					}
 
-					const values = this.autoStealGrid.values
+					const values = this.getSortedAutoStealSpells()
 					const iconSize = this.autoStealHudIconSize.value
 					const gap = 6
 					const cols = 5
@@ -638,7 +1008,10 @@ new (class RubickCombo {
 					}
 
 					if (targetSpellName !== undefined && targetSpellName !== dragSpellName) {
-						const entries = [...this.autoStealGrid.enabledValues.entries()]
+						const entries = [...this.autoStealGrid.enabledValues.entries()] as [
+							string,
+							[boolean, boolean, boolean, number]
+						][]
 						entries.sort((a, b) => a[1][3] - b[1][3])
 
 						const dragIdx = entries.findIndex(e => e[0] === dragSpellName)
@@ -652,6 +1025,7 @@ new (class RubickCombo {
 								entries[k][1][3] = k
 							}
 
+							this.autoStealGrid.values = entries.map(e => e[0])
 							this.autoStealGrid.Update()
 							Menu.Base.SaveConfigASAP = true
 						}
@@ -662,12 +1036,12 @@ new (class RubickCombo {
 		}
 	}
 
-	private get hasLocalHero() {
-		return (
+	private get hasLocalHero(): boolean {
+		return Boolean(
 			LocalPlayer &&
-			LocalPlayer.Hero &&
-			LocalPlayer.Hero.IsValid &&
-			LocalPlayer.Hero.Name === "npc_dota_hero_rubick"
+				LocalPlayer.Hero &&
+				LocalPlayer.Hero.IsValid &&
+				LocalPlayer.Hero.Name === "npc_dota_hero_rubick"
 		)
 	}
 
@@ -696,7 +1070,6 @@ new (class RubickCombo {
 		const isToggle = abil.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_TOGGLE)
 		const isAutoCast = abil.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_AUTOCAST)
 
-		// Jika murni pasif (tanpa komponen aktif), tidak bisa dicuri
 		if (isPassive && !isNoTarget && !isTarget && !isPosition && !isToggle && !isAutoCast) {
 			return false
 		}
@@ -728,71 +1101,82 @@ new (class RubickCombo {
 		if (!this.autoStealGrid) {
 			return
 		}
-		if (this.autoStealGrid.IsEnabled(spellName)) {
-			const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
-			if (
-				spellSteal &&
-				spellSteal.IsValid &&
-				spellSteal.Level > 0 &&
-				spellSteal.Cooldown <= 0.1 &&
-				hero.Mana >= spellSteal.ManaCost
-			) {
-				// --- GRID PRIORITY LOGIC ---
-				const newSpellPriority = this.autoStealGrid.GetPriority(spellName)
-				let shouldSteal = true
-				let isUpgradingPriority = false
 
-				// Cari tahu apakah kita sedang memegang spell curian
-				for (const abil of hero.Spells) {
-					if (this.isValidSpell(abil)) {
-						const currentSpellPriority = this.autoStealGrid.GetPriority(abil.Name)
+		// 1. MUST be enabled in Auto Steal grid by the user
+		if (!this.autoStealGrid.IsEnabled(spellName)) {
+			return
+		}
 
-						// 1. Jangan pernah curi jika kita SUDAH memegang spell yang sama persis (mencegah spam)
-						if (abil.Name === spellName) {
-							shouldSteal = false
-							break
-						}
+		const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
+		if (
+			!spellSteal ||
+			!spellSteal.IsValid ||
+			spellSteal.Level <= 0 ||
+			spellSteal.Cooldown > 0.1 ||
+			hero.Mana < spellSteal.ManaCost
+		) {
+			return
+		}
 
-						// 2. Bandingkan Prioritas Grid UI
-						// Nilai GetPriority() lebih KECIL = Posisi lebih di KIRI/ATAS = Prioritas lebih TINGGI
-						// Jika spell yang sedang dipegang memiliki prioritas lebih tinggi (atau sama), JANGAN ditimpa!
-						if (currentSpellPriority !== -1 && newSpellPriority >= currentSpellPriority) {
-							shouldSteal = false
-							break
-						}
+		const newSpellPriority = this.autoStealGrid.GetPriority(spellName)
+		if (newSpellPriority === Number.MAX_SAFE_INTEGER) {
+			return
+		}
 
-						// Jika spell baru memiliki prioritas lebih tinggi (angka lebih kecil), kita sedang UPGRADE spell!
-						if (currentSpellPriority !== -1 && newSpellPriority < currentSpellPriority) {
-							isUpgradingPriority = true
-						}
-					}
-				}
+		// Collect currently held stolen spells on Rubick
+		const currentStolenSpells: Ability[] = []
+		for (const abil of hero.Spells) {
+			if (this.isValidSpell(abil)) {
+				currentStolenSpells.push(abil)
+			}
+		}
 
-				if (!shouldSteal) {
+		// 2. Never steal if we already hold this exact spell
+		for (const held of currentStolenSpells) {
+			if (held.Name === spellName) {
+				return
+			}
+		}
+
+		// 3. Strict Priority Hierarchy:
+		// Priority 0 = Rank 1 (highest priority). Smaller number = higher priority.
+		const hasAghanim = hero.HasScepter
+
+		if (!hasAghanim) {
+			// Single stolen spell slot:
+			if (currentStolenSpells.length > 0) {
+				const currentSpell = currentStolenSpells[0]
+				const currentPriority = this.autoStealGrid.GetPriority(currentSpell.Name)
+				// If currently held spell is equal or higher priority than the new spell, DO NOT STEAL!
+				if (currentPriority <= newSpellPriority) {
 					return
 				}
-				// -------------------------
+			}
+		} else if (currentStolenSpells.length >= 2) {
+			// Dual stolen spell slots (Aghanim):
+			const prio1 = this.autoStealGrid.GetPriority(currentStolenSpells[0].Name)
+			const prio2 = this.autoStealGrid.GetPriority(currentStolenSpells[1].Name)
+			// If BOTH held spells are equal or higher priority than the new spell, DO NOT STEAL!
+			if (prio1 <= newSpellPriority && prio2 <= newSpellPriority) {
+				return
+			}
+		}
 
-				// Prioritaskan eksekusi langsung jika ini adalah upgrade spell
-				if (!this.stealSleeper.Sleeping || isUpgradingPriority) {
-					const castRange = spellSteal.CastRange > 0 ? spellSteal.CastRange : 1000
-					// Tambahkan batas toleransi jarak agar Rubick tidak berjalan melintasi map otomatis
-					if (hero.Distance2D(owner) <= castRange + 400) {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-							issuers: [hero],
-							target: owner.Index,
-							ability: spellSteal.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-						// Gunakan delay 0.8 detik agar cukup untuk mencegah spam brutal, namun cukup cepat di teamfight
-						this.stealSleeper.Sleep(
-							Math.max(800, GameState.InputLag * 1000 + spellSteal.CastPoint * 1000 + 100)
-						)
-					}
-				}
+		// Execute Spell Steal
+		if (!this.stealSleeper.Sleeping) {
+			const castRange = spellSteal.CastRange > 0 ? spellSteal.CastRange : 1000
+			if (hero.Distance2D(owner) <= castRange + 400) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: owner.Index,
+					ability: spellSteal.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.stealSleeper.Sleep(Math.max(800, GameState.InputLag * 1000 + spellSteal.CastPoint * 1000 + 100))
 			}
 		}
 	}
@@ -804,16 +1188,15 @@ new (class RubickCombo {
 
 		const hero = LocalPlayer?.Hero
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("rubick_target_ring")
 			return
 		}
 
-		// Ensure grids are initialized
 		if (!this.autoStealGrid || !this.autoCastGrid || !this.comboSequenceGrid) {
 			return
 		}
 
-		// One-time cleanup on first frame to strip any stale spell data
-		// that the config loader dumped into the grids (from previous games).
 		if (this.firstFrameCleanup) {
 			this.firstFrameCleanup = false
 			if (this.autoStealGrid.values.length > 0) {
@@ -829,7 +1212,6 @@ new (class RubickCombo {
 			}
 		}
 
-		// Build sets of currently valid spell names
 		const enemySpellNames = new Set<string>()
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
 			if (enemy && enemy.IsValid && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
@@ -850,67 +1232,41 @@ new (class RubickCombo {
 			}
 		}
 
-		// Remove stale entries from autoStealGrid (spells from enemies no longer in game)
 		let gridDirty = false
-		for (const name of [...this.autoStealGrid.values]) {
-			if (!enemySpellNames.has(name)) {
-				this.autoStealGrid.enabledValues.delete(name)
-				this.autoStealGrid.values.splice(this.autoStealGrid.values.indexOf(name), 1)
-				gridDirty = true
-			}
-		}
 
-		// Remove stale entries from autoCastGrid (spells Rubick no longer holds)
-		for (const name of [...this.autoCastGrid.values]) {
-			if (!stolenSpellNames.has(name)) {
-				this.autoCastGrid.enabledValues.delete(name)
-				this.autoCastGrid.values.splice(this.autoCastGrid.values.indexOf(name), 1)
-				gridDirty = true
-			}
-		}
-
-		// Register new enemy spells — bypass QueuedUpdate by writing to enabledValues directly
+		// Dynamically register newly discovered enemy spells without deleting existing configured ones
 		for (const name of enemySpellNames) {
 			if (!this.autoStealGrid.values.includes(name)) {
 				this.autoStealGrid.values.push(name)
 			}
 			if (!this.autoStealGrid.enabledValues.has(name)) {
-				this.autoStealGrid.enabledValues.set(name, [
-					true,
-					true,
-					true,
-					this.autoStealGrid.enabledValues.size
-				])
+				this.autoStealGrid.enabledValues.set(name, [true, true, true, this.autoStealGrid.enabledValues.size])
 				gridDirty = true
 			}
 		}
 
-		// Register stolen spells — bypass QueuedUpdate so they're auto-castable immediately
+		// Update AutoCast grid with currently stolen spells
 		for (const name of stolenSpellNames) {
 			if (!this.autoCastGrid.values.includes(name)) {
 				this.autoCastGrid.values.push(name)
 			}
 			if (!this.autoCastGrid.enabledValues.has(name)) {
-				this.autoCastGrid.enabledValues.set(name, [
-					true,
-					true,
-					true,
-					this.autoCastGrid.enabledValues.size
-				])
+				this.autoCastGrid.enabledValues.set(name, [true, true, true, this.autoCastGrid.enabledValues.size])
 				gridDirty = true
 			}
 		}
 
-		// Update grid UI and persist clean state to config
 		if (gridDirty) {
 			this.autoStealGrid.Update()
 			this.autoCastGrid.Update()
 			Menu.Base.SaveConfigASAP = true
 		}
 
-		// Validasi apakah tombol combo ditekan
+		// Check if combo key is held
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
+			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("rubick_target_ring")
 			return
 		}
 
@@ -918,44 +1274,60 @@ new (class RubickCombo {
 			return
 		}
 
-		if (this.sleeper.Sleeping) {
-			return
-		}
-
-		// Cari target hero musuh terdekat dengan posisi kursor mouse
-		const mousePos = InputManager.CursorOnWorld
-		let bestTarget: Hero | undefined
-		let minDist = Infinity
-
-		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-			if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
-				const dist = enemy.Position.Distance2D(mousePos)
-				if (dist < this.comboRadius.value && dist < minDist) {
-					minDist = dist
-					bestTarget = enemy
+		// ------------------ TARGET SELECTION & LOCKING ------------------
+		let bestTarget: Hero | undefined = this.lockedTarget
+		if (!bestTarget || !bestTarget.IsValid || !bestTarget.IsAlive || !bestTarget.IsVisible) {
+			const mousePos = InputManager.CursorOnWorld
+			let minDist = Infinity
+			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+					const dist = enemy.Position.Distance2D(mousePos)
+					if (dist < this.comboRadius.value && dist < minDist) {
+						minDist = dist
+						bestTarget = enemy
+					}
 				}
+			}
+			if (this.lockTargetEnabled.value && bestTarget) {
+				this.lockedTarget = bestTarget
 			}
 		}
 
 		if (!bestTarget) {
+			this.pSDK.DestroyByKey("rubick_target_ring")
+			return
+		}
+
+		this.pSDK.DrawCircle("rubick_target_ring", bestTarget, 140, {
+			Color: new Color(0, 255, 120, 220),
+			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+		})
+
+		if (this.sleeper.Sleeping) {
 			return
 		}
 
 		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
-
 		let stolenSpellsExecuted = false
 
-		// Urutan combo dinamis dari grid selector
-		if (!this.comboSequenceGrid) {
+		// ------------------ ITEMS EXECUTION ------------------
+		if (this.executeItems(hero, bestTarget, isTargetImmune)) {
 			return
 		}
-		for (const spellName of this.comboSequenceGrid.values) {
-			if (!this.comboSequenceGrid.IsEnabled(spellName)) {
+
+		// ------------------ TELEKINESIS LAND CHECK ------------------
+		if (this.executeTelekinesisLand(hero, bestTarget)) {
+			return
+		}
+
+		// ------------------ SKILL ORDER EXECUTION ------------------
+		for (const actionName of this.comboSequenceGrid.values) {
+			if (!this.comboSequenceGrid.IsEnabled(actionName)) {
 				continue
 			}
 
-			if (spellName === "rubick_telekinesis") {
-				// 1. Telekinesis
+			// 1. TELEKINESIS
+			if (actionName === "rubick_telekinesis") {
 				const telekinesis = hero.GetAbilityByName("rubick_telekinesis")
 				if (
 					telekinesis &&
@@ -967,6 +1339,7 @@ new (class RubickCombo {
 				) {
 					const castRange = telekinesis.CastRange > 0 ? telekinesis.CastRange : 600
 					if (hero.Distance2D(bestTarget) <= castRange) {
+						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 							issuers: [hero],
@@ -981,15 +1354,16 @@ new (class RubickCombo {
 					}
 				}
 
-				// Eksekusi Stolen Spells secara otomatis tepat setelah Telekinesis
 				if (!stolenSpellsExecuted) {
 					stolenSpellsExecuted = true
 					if (this.executeStolenSpells(stolenSpells, hero, bestTarget, isTargetImmune)) {
 						return
 					}
 				}
-			} else if (spellName === "rubick_fade_bolt") {
-				// Pastikan Stolen Spells dieksekusi jika belum sempat terpicu
+			}
+
+			// 2. FADE BOLT
+			else if (actionName === "rubick_fade_bolt") {
 				if (!stolenSpellsExecuted) {
 					stolenSpellsExecuted = true
 					if (this.executeStolenSpells(stolenSpells, hero, bestTarget, isTargetImmune)) {
@@ -997,7 +1371,6 @@ new (class RubickCombo {
 					}
 				}
 
-				// 3. Fade Bolt
 				const fadeBolt = hero.GetAbilityByName("rubick_fade_bolt")
 				if (
 					fadeBolt &&
@@ -1009,6 +1382,7 @@ new (class RubickCombo {
 				) {
 					const castRange = fadeBolt.CastRange > 0 ? fadeBolt.CastRange : 800
 					if (hero.Distance2D(bestTarget) <= castRange) {
+						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 							issuers: [hero],
@@ -1022,44 +1396,10 @@ new (class RubickCombo {
 						return
 					}
 				}
-			} else if (spellName === "rubick_spell_steal") {
-				// Pastikan Stolen Spells dieksekusi jika belum sempat terpicu
-				if (!stolenSpellsExecuted) {
-					stolenSpellsExecuted = true
-					if (this.executeStolenSpells(stolenSpells, hero, bestTarget, isTargetImmune)) {
-						return
-					}
-				}
-
-				// 4. Spell Steal
-				const spellSteal = hero.GetAbilityByName("rubick_spell_steal")
-				if (
-					spellSteal &&
-					spellSteal.IsValid &&
-					spellSteal.Level > 0 &&
-					spellSteal.Cooldown <= 0.1 &&
-					hero.Mana >= spellSteal.ManaCost &&
-					!isTargetImmune
-				) {
-					const castRange = spellSteal.CastRange > 0 ? spellSteal.CastRange : 1000
-					if (hero.Distance2D(bestTarget) <= castRange) {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-							issuers: [hero],
-							target: bestTarget.Index,
-							ability: spellSteal.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-						this.sleeper.Sleep(GameState.InputLag * 1000 + spellSteal.CastPoint * 1000 + 100)
-						return
-					}
-				}
 			}
 		}
 
-		// Fallback terakhir untuk Stolen Spells jika semua skill lain dinonaktifkan di menu
+		// Fallback for stolen spells
 		if (!stolenSpellsExecuted) {
 			stolenSpellsExecuted = true
 			if (this.executeStolenSpells(stolenSpells, hero, bestTarget, isTargetImmune)) {
@@ -1067,7 +1407,7 @@ new (class RubickCombo {
 			}
 		}
 
-		// Fallback: Orb Walk / serang target via shared orbwalker
+		// Fallback: Orb Walk
 		executeOrbwalk(hero, bestTarget, this.sleeper, {
 			enabled: this.smartOrbWalkEnabled.value,
 			safeDistancePct: this.smartOrbWalkDistancePct.value,
