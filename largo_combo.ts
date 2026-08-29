@@ -63,7 +63,7 @@ new (class LargoCombo {
 		80,
 		10,
 		100,
-		5,
+		0,
 		"Target distance percentage of attack range to maintain during Orb Walk"
 	)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
@@ -257,7 +257,6 @@ new (class LargoCombo {
 
 	/**
 	 * Auto Songs — background toggle management.
-
 	 *
 	 * Without Aghanim only 1 song active at a time.
 	 * With Aghanim (Scepter) can have 2.

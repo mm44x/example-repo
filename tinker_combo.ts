@@ -33,12 +33,7 @@ const COMBO_SPELLS = [
 	"tinker_rearm"
 ]
 
-const RELEVANT_SPELLS = [
-	"tinker_laser",
-	"tinker_march_of_the_machines",
-	"tinker_deploy_turrets",
-	"tinker_warp_grenade"
-]
+const RELEVANT_SPELLS = ["tinker_laser", "tinker_march_of_the_machines", "tinker_deploy_turrets", "tinker_warp_grenade"]
 
 let spellInfoFrameCount = 0
 const debugSpellInfo: string[] = []
@@ -54,7 +49,16 @@ new (class TinkerCombo {
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_sheepstick", "item_ethereal_blade", "item_dagon", "item_shivas_guard", "item_black_king_bar", "item_glimmer_cape", "item_bottle"],
+		[
+			"item_blink",
+			"item_sheepstick",
+			"item_ethereal_blade",
+			"item_dagon",
+			"item_shivas_guard",
+			"item_black_king_bar",
+			"item_glimmer_cape",
+			"item_bottle"
+		],
 		new Map([
 			["item_blink", true],
 			["item_sheepstick", true],
@@ -72,7 +76,7 @@ new (class TinkerCombo {
 	private readonly blinkSleeper = new TickSleeper()
 
 	private readonly smartOrbWalkEnabled = this.entry.AddToggle("Enable Smart Orb Walk", true)
-	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 5)
+	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 0)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle("Stop-to-Cancel Backswing", false)
 
 	private comboSequenceGrid: any
@@ -97,8 +101,19 @@ new (class TinkerCombo {
 
 	// Auto Farm Loop (Jungle dengan Keen Conveyance)
 	private readonly autoFarmLoopNode = this.autoFarmNode.AddNode("Farm Loop (Keen Conveyance)")
-	private readonly farmLoopEnabled = this.autoFarmLoopNode.AddToggle("Enable Farm Loop", false, "Teleport ke jungle via Keen Conveyance, farm, lalu kembali ke fountain saat mana low")
-	private readonly farmLoopLowManaPct = this.autoFarmLoopNode.AddSlider("Return Mana %", 30, 10, 90, 5, "Pulang ke fountain saat mana di bawah persentase ini")
+	private readonly farmLoopEnabled = this.autoFarmLoopNode.AddToggle(
+		"Enable Farm Loop",
+		false,
+		"Teleport ke jungle via Keen Conveyance, farm, lalu kembali ke fountain saat mana low"
+	)
+	private readonly farmLoopLowManaPct = this.autoFarmLoopNode.AddSlider(
+		"Return Mana %",
+		30,
+		10,
+		90,
+		0,
+		"Pulang ke fountain saat mana di bawah persentase ini"
+	)
 	private farmLoopSleeper = new TickSleeper()
 	private farmLoopState: "idle" | "teleporting_out" | "farming" | "teleporting_back" | "regenerating" = "idle"
 
@@ -110,8 +125,8 @@ new (class TinkerCombo {
 		0,
 		"panorama/images/items/item_bottle_png.vtex_c"
 	)
-	private readonly bottleFountainHpPct = this.entry.AddSlider("Bottle Fountain HP %", 70, 5, 100, 5)
-	private readonly bottleFountainManaPct = this.entry.AddSlider("Bottle Fountain Mana %", 60, 5, 100, 5)
+	private readonly bottleFountainHpPct = this.entry.AddSlider("Bottle Fountain HP %", 70, 5, 100, 0)
+	private readonly bottleFountainManaPct = this.entry.AddSlider("Bottle Fountain Mana %", 60, 5, 100, 0)
 	private readonly bottleFountainSleeper = new TickSleeper()
 
 	// HUD — dua panel terpisah: status + debug
@@ -130,11 +145,7 @@ new (class TinkerCombo {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
 		COMBO_SPELLS.forEach((name, i) => defaultCombo.set(name, [true, true, true, i]))
 
-		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
-			"Combo Order",
-			COMBO_SPELLS,
-			defaultCombo
-		)
+		this.comboSequenceGrid = this.entry.AddDynamicImageSelector("Combo Order", COMBO_SPELLS, defaultCombo)
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
@@ -206,7 +217,14 @@ new (class TinkerCombo {
 
 	private tryCastItem(hero: Hero, itemName: string, target: Hero): Ability | undefined {
 		const item = hero.Items.find(i => i.Name === itemName)
-		if (item && item.IsValid && item.CanBeUsable && !hero.IsMuted && hero.Mana >= item.ManaCost && item.Cooldown <= 0.1) {
+		if (
+			item &&
+			item.IsValid &&
+			item.CanBeUsable &&
+			!hero.IsMuted &&
+			hero.Mana >= item.ManaCost &&
+			item.Cooldown <= 0.1
+		) {
 			if (item.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
 				this.castTarget(hero, item, target)
 				return item
@@ -222,8 +240,12 @@ new (class TinkerCombo {
 	private tryCastItemNoTarget(hero: Hero, itemName: string): Ability | undefined {
 		const item = hero.Items.find(i => i.Name === itemName)
 		if (
-			item && item.IsValid && item.CanBeUsable && !hero.IsMuted &&
-			hero.Mana >= item.ManaCost && item.Cooldown <= 0.1 &&
+			item &&
+			item.IsValid &&
+			item.CanBeUsable &&
+			!hero.IsMuted &&
+			hero.Mana >= item.ManaCost &&
+			item.Cooldown <= 0.1 &&
 			item.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)
 		) {
 			this.castNoTarget(hero, item)
@@ -233,24 +255,40 @@ new (class TinkerCombo {
 	}
 
 	private tryBottle(hero: Hero): boolean {
-		if (!this.itemsSelector.IsEnabled("item_bottle")) return false
-		if (hero.Mana >= hero.MaxMana * 0.95 && hero.HP >= hero.MaxHP * 0.95) return false
-		if (hero.HasBuffByName("modifier_bottle_regeneration")) return false
+		if (!this.itemsSelector.IsEnabled("item_bottle")) {
+			return false
+		}
+		if (hero.Mana >= hero.MaxMana * 0.95 && hero.HP >= hero.MaxHP * 0.95) {
+			return false
+		}
+		if (hero.HasBuffByName("modifier_bottle_regeneration")) {
+			return false
+		}
 
 		const bottle = hero.Items.find(i => i.Name === "item_bottle")
-		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) return false
-		if (bottle.CurrentCharges <= 0) return false
+		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) {
+			return false
+		}
+		if (bottle.CurrentCharges <= 0) {
+			return false
+		}
 
 		this.castNoTarget(hero, bottle)
 		return true
 	}
 
 	private handlePendingBottle(hero: Hero): void {
-		if (!this.pendingBottleAfterRearm) return
-		if (this.rearmModifierSleeper.Sleeping) return
+		if (!this.pendingBottleAfterRearm) {
+			return
+		}
+		if (this.rearmModifierSleeper.Sleeping) {
+			return
+		}
 
 		const hasRearmModifier = hero.HasBuffByName("modifier_tinker_rearm")
-		if (hasRearmModifier) return
+		if (hasRearmModifier) {
+			return
+		}
 
 		// Rearm selesai/batal
 		this.pendingBottleAfterRearm = false
@@ -266,25 +304,41 @@ new (class TinkerCombo {
 	}
 
 	private handleAutoBottleFountain(hero: Hero): void {
-		if (!this.autoBottleFountain.value) return
-		if (this.bottleFountainSleeper.Sleeping) return
+		if (!this.autoBottleFountain.value) {
+			return
+		}
+		if (this.bottleFountainSleeper.Sleeping) {
+			return
+		}
 
 		// Jangan ganggu channeling: Rearm, TP (Keen Conveyance), dll
-		if (hero.IsChanneling || hero.IsInAbilityPhase) return
+		if (hero.IsChanneling || hero.IsInAbilityPhase) {
+			return
+		}
 
 		// Hanya di fountain sendiri
-		if (!this.isInOwnFountain(hero)) return
+		if (!this.isInOwnFountain(hero)) {
+			return
+		}
 
 		// Bottle butuh charges & regenerasi belum aktif
-		if (hero.HasBuffByName("modifier_bottle_regeneration")) return
+		if (hero.HasBuffByName("modifier_bottle_regeneration")) {
+			return
+		}
 
 		const hpPct = (hero.HP / hero.MaxHP) * 100
 		const manaPct = (hero.Mana / hero.MaxMana) * 100
-		if (hpPct >= this.bottleFountainHpPct.value && manaPct >= this.bottleFountainManaPct.value) return
+		if (hpPct >= this.bottleFountainHpPct.value && manaPct >= this.bottleFountainManaPct.value) {
+			return
+		}
 
 		const bottle = hero.Items.find(i => i.Name === "item_bottle")
-		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) return
-		if (bottle.CurrentCharges <= 0) return
+		if (!bottle || !bottle.IsValid || !bottle.CanBeUsable || hero.IsMuted || bottle.Cooldown > 0.1) {
+			return
+		}
+		if (bottle.CurrentCharges <= 0) {
+			return
+		}
 
 		this.castNoTarget(hero, bottle)
 		this.bottleFountainSleeper.Sleep(GameState.InputLag * 1000 + 500)
@@ -293,7 +347,9 @@ new (class TinkerCombo {
 	// Debug: status auto bottle (dipanggil dari Draw)
 	private getAutoBottleDebug(): string {
 		const hero = LocalPlayer?.Hero
-		if (!hero || !hero.IsValid) return "AutoBottle: no hero"
+		if (!hero || !hero.IsValid) {
+			return "AutoBottle: no hero"
+		}
 		const parts: string[] = []
 		parts.push(`en=${this.autoBottleFountain.value}`)
 		parts.push(`fount=${this.isInOwnFountain(hero)}`)
@@ -311,9 +367,20 @@ new (class TinkerCombo {
 	// --- Blink ---
 
 	private doBlink(hero: Hero, position: Vector3): boolean {
-		if (!this.itemsSelector.IsEnabled("item_blink") || this.blinkSleeper.Sleeping) return false
+		if (!this.itemsSelector.IsEnabled("item_blink") || this.blinkSleeper.Sleeping) {
+			return false
+		}
 		const blink = hero.Items.find(i => i.Name === "item_blink")
-		if (!blink || !blink.IsValid || blink.Cooldown > 0.1 || !blink.CanBeUsable || hero.IsMuted || hero.Mana < blink.ManaCost) return false
+		if (
+			!blink ||
+			!blink.IsValid ||
+			blink.Cooldown > 0.1 ||
+			!blink.CanBeUsable ||
+			hero.IsMuted ||
+			hero.Mana < blink.ManaCost
+		) {
+			return false
+		}
 		const dir = position.Subtract(hero.Position)
 		const dist = dir.Length2D
 		const blinkRange = blink.CastRange > 0 ? blink.CastRange : 1200
@@ -334,7 +401,9 @@ new (class TinkerCombo {
 
 	private handleBlinkKey(hero: Hero): boolean {
 		// @ts-ignore
-		if (!this.blinkKey.isPressed) return false
+		if (!this.blinkKey.isPressed) {
+			return false
+		}
 		return this.doBlink(hero, InputManager.CursorOnWorld)
 	}
 
@@ -348,7 +417,8 @@ new (class TinkerCombo {
 
 		const itemOnCd = [
 			this.itemsSelector.IsEnabled("item_sheepstick") && hero.Items.find(i => i.Name === "item_sheepstick"),
-			this.itemsSelector.IsEnabled("item_ethereal_blade") && hero.Items.find(i => i.Name === "item_ethereal_blade"),
+			this.itemsSelector.IsEnabled("item_ethereal_blade") &&
+				hero.Items.find(i => i.Name === "item_ethereal_blade"),
 			this.itemsSelector.IsEnabled("item_dagon") && this.getDagonItem(hero),
 			this.itemsSelector.IsEnabled("item_shivas_guard") && hero.Items.find(i => i.Name === "item_shivas_guard")
 		].some(item => item && item.IsValid && item.Cooldown > 1)
@@ -360,7 +430,9 @@ new (class TinkerCombo {
 		const rearm = hero.GetAbilityByName("tinker_rearm")
 		if (rearm && rearm.IsValid && rearm.Level > 0) {
 			const maxChannel = rearm.MaxChannelTime
-			if (maxChannel > 0) return maxChannel
+			if (maxChannel > 0) {
+				return maxChannel
+			}
 			const channelTimes = [2.75, 2.0, 1.25]
 			const levelIndex = Math.max(0, Math.min(rearm.Level - 1, channelTimes.length - 1))
 			return channelTimes[levelIndex]
@@ -371,32 +443,43 @@ new (class TinkerCombo {
 	private getDagonItem(hero: Hero): Ability | undefined {
 		for (const name of ["item_dagon_5", "item_dagon_4", "item_dagon_3", "item_dagon_2", "item_dagon"]) {
 			const item = hero.Items.find(i => i.Name === name)
-			if (item && item.IsValid) return item
+			if (item && item.IsValid) {
+				return item
+			}
 		}
 		return undefined
 	}
 
-
 	private hasWarpGrenade(hero: Hero): boolean {
 		const wg = hero.GetAbilityByName("tinker_warp_grenade")
-		if (!wg || !wg.IsValid) return false
+		if (!wg || !wg.IsValid) {
+			return false
+		}
 		return !wg.IsHidden
 	}
 
 	// Glimmer Cape: self-cast saat HP rendah & belum invisible (emergency survive)
 	// NOTE: Glimmer adalah unit-target item — self-cast via CAST_TARGET ke diri sendiri
 	private tryCastGlimmer(hero: Hero, sleeper: TickSleeper): boolean {
-		if (!this.itemsSelector.IsEnabled("item_glimmer_cape") || hero.IsInvisible) return false
+		if (!this.itemsSelector.IsEnabled("item_glimmer_cape") || hero.IsInvisible) {
+			return false
+		}
 		const glimmer = hero.Items.find(i => i.Name === "item_glimmer_cape")
 		if (
-			!glimmer || !glimmer.IsValid || !glimmer.CanBeUsable || hero.IsMuted ||
-			glimmer.Cooldown > 0.1 || hero.Mana < glimmer.ManaCost ||
+			!glimmer ||
+			!glimmer.IsValid ||
+			!glimmer.CanBeUsable ||
+			hero.IsMuted ||
+			glimmer.Cooldown > 0.1 ||
+			hero.Mana < glimmer.ManaCost ||
 			hero.HasBuffByName("modifier_item_glimmer_cape_fade")
 		) {
 			return false
 		}
 		const hpPct = (hero.HP / hero.MaxHP) * 100
-		if (hpPct > 40) return false
+		if (hpPct > 40) {
+			return false
+		}
 
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
@@ -414,16 +497,28 @@ new (class TinkerCombo {
 	// --- Spam March ---
 
 	private handleSpamMarch(hero: Hero): boolean {
-		if (!this.spamMarchEnabled.value || this.spamMarchSleeper.Sleeping) return false
+		if (!this.spamMarchEnabled.value || this.spamMarchSleeper.Sleeping) {
+			return false
+		}
 		// @ts-ignore
-		if (!this.spamMarchKey.isPressed) return false
-		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced || hero.IsChanneling) return false
+		if (!this.spamMarchKey.isPressed) {
+			return false
+		}
+		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced || hero.IsChanneling) {
+			return false
+		}
 
 		if (this.spamMarchRearm.value) {
 			const march = hero.GetAbilityByName("tinker_march_of_the_machines")
 			if (march && march.IsValid && march.Level > 0 && march.Cooldown > 0.5) {
 				const rearm = hero.GetAbilityByName("tinker_rearm")
-				if (rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost + march.ManaCost) {
+				if (
+					rearm &&
+					rearm.IsValid &&
+					rearm.Level > 0 &&
+					rearm.Cooldown <= 0.1 &&
+					hero.Mana >= rearm.ManaCost + march.ManaCost
+				) {
 					this.castNoTarget(hero, rearm)
 					const channelDur = this.getRearmChannelDuration(hero)
 					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
@@ -442,7 +537,9 @@ new (class TinkerCombo {
 		}
 
 		const march = hero.GetAbilityByName("tinker_march_of_the_machines")
-		if (!march || !march.IsValid || march.Level <= 0 || march.Cooldown > 0.1 || hero.Mana < march.ManaCost) return false
+		if (!march || !march.IsValid || march.Level <= 0 || march.Cooldown > 0.1 || hero.Mana < march.ManaCost) {
+			return false
+		}
 
 		this.castPosition(hero, march, this.groundCastPos(hero, march, InputManager.CursorOnWorld))
 		this.spamMarchSleeper.Sleep(GameState.InputLag * 1000 + march.CastPoint * 1000 + 100)
@@ -473,14 +570,22 @@ new (class TinkerCombo {
 		const campCreeps = new Map<string, Creep[]>()
 		for (const c of neutralCreeps) {
 			const name = c.Spawner?.Name ?? "unknown"
-			if (!campCreeps.has(name)) campCreeps.set(name, [])
+			if (!campCreeps.has(name)) {
+				campCreeps.set(name, [])
+			}
 			campCreeps.get(name)!.push(c)
 		}
 
 		const campCenters = new Map<string, Vector3>()
 		for (const [name, creeps] of campCreeps) {
-			let cx = 0, cy = 0, cz = 0
-			for (const c of creeps) { cx += c.Position.x; cy += c.Position.y; cz += c.Position.z }
+			let cx = 0,
+				cy = 0,
+				cz = 0
+			for (const c of creeps) {
+				cx += c.Position.x
+				cy += c.Position.y
+				cz += c.Position.z
+			}
 			campCenters.set(name, new Vector3(cx / creeps.length, cy / creeps.length, cz / creeps.length))
 		}
 
@@ -491,7 +596,8 @@ new (class TinkerCombo {
 		let bestPairDist = Infinity
 		for (let i = 0; i < names.length; i++) {
 			for (let j = i + 1; j < names.length; j++) {
-				const a = campCenters.get(names[i])!, b = campCenters.get(names[j])!
+				const a = campCenters.get(names[i])!,
+					b = campCenters.get(names[j])!
 				if (a.Distance2D(b) < 1200) {
 					const mid = new Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
 					const d = hero.Distance2D(mid)
@@ -502,13 +608,19 @@ new (class TinkerCombo {
 				}
 			}
 		}
-		if (bestPair) return bestPair
+		if (bestPair) {
+			return bestPair
+		}
 
 		// Prioritas 2: camp terdekat yang masih ada creep hidup
-		let nc: Vector3 | undefined, nd = Infinity
+		let nc: Vector3 | undefined,
+			nd = Infinity
 		for (const c of campCenters.values()) {
 			const d = hero.Distance2D(c)
-			if (d < nd) { nd = d; nc = c }
+			if (d < nd) {
+				nd = d
+				nc = c
+			}
 		}
 		return nc
 	}
@@ -530,39 +642,67 @@ new (class TinkerCombo {
 		const creeps = EntityManager.GetEntitiesByClass(Creep).filter(
 			c => c.IsValid && c.IsAlive && c.IsVisible && c.IsLaneCreep && c.IsEnemy(hero)
 		)
-		if (creeps.length === 0) return undefined
+		if (creeps.length === 0) {
+			return undefined
+		}
 
-		let bestCluster: Creep[] = [], bestDist = Infinity
+		let bestCluster: Creep[] = [],
+			bestDist = Infinity
 		const visited = new Set<number>()
 		for (const c of creeps) {
-			if (visited.has(c.Index)) continue
+			if (visited.has(c.Index)) {
+				continue
+			}
 			const cluster: Creep[] = [c]
 			visited.add(c.Index)
 			for (const o of creeps) {
-				if (!visited.has(o.Index) && c.Distance2D(o) < 500) { cluster.push(o); visited.add(o.Index) }
+				if (!visited.has(o.Index) && c.Distance2D(o) < 500) {
+					cluster.push(o)
+					visited.add(o.Index)
+				}
 			}
 			const d = hero.Distance2D(c.Position)
-			if (d < bestDist) { bestDist = d; bestCluster = cluster }
+			if (d < bestDist) {
+				bestDist = d
+				bestCluster = cluster
+			}
 		}
-		if (bestCluster.length === 0) return undefined
+		if (bestCluster.length === 0) {
+			return undefined
+		}
 
-		let cx = 0, cy = 0, cz = 0
-		for (const c of bestCluster) { cx += c.Position.x; cy += c.Position.y; cz += c.Position.z }
+		let cx = 0,
+			cy = 0,
+			cz = 0
+		for (const c of bestCluster) {
+			cx += c.Position.x
+			cy += c.Position.y
+			cz += c.Position.z
+		}
 		return new Vector3(cx / bestCluster.length, cy / bestCluster.length, cz / bestCluster.length)
 	}
 
 	private findLaserFarmTarget(hero: Hero): Creep | undefined {
 		const creeps = EntityManager.GetEntitiesByClass(Creep).filter(
-			c => c.IsValid && c.IsAlive && c.IsVisible && c.IsEnemy(hero) &&
-				hero.Distance2D(c) <= 600 && (c.IsNeutral || c.IsLaneCreep)
+			c =>
+				c.IsValid &&
+				c.IsAlive &&
+				c.IsVisible &&
+				c.IsEnemy(hero) &&
+				hero.Distance2D(c) <= 600 &&
+				(c.IsNeutral || c.IsLaneCreep)
 		)
 		creeps.sort((a, b) => b.HP - a.HP)
 		return creeps[0]
 	}
 
 	private handleAutoFarm(hero: Hero): boolean {
-		if (!this.isAutoFarming || this.autoFarmSleeper.Sleeping) return false
-		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced || hero.IsChanneling) return false
+		if (!this.isAutoFarming || this.autoFarmSleeper.Sleeping) {
+			return false
+		}
+		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced || hero.IsChanneling) {
+			return false
+		}
 
 		const isJungle = this.autoFarmMode.SelectedID === 0
 
@@ -617,7 +757,9 @@ new (class TinkerCombo {
 		const maxRange = ability.CastRange > 0 ? ability.CastRange : 900
 		const dir = target.Subtract(hero.Position)
 		const dist = dir.Length2D
-		if (dist <= maxRange) return target.Clone()
+		if (dist <= maxRange) {
+			return target.Clone()
+		}
 		return hero.Position.Add(dir.Normalize().MultiplyScalar(maxRange))
 	}
 
@@ -633,7 +775,9 @@ new (class TinkerCombo {
 		let best: Unit | undefined
 		let bestDist = Infinity
 		for (const ent of EntityManager.GetEntitiesByClass(Outpost)) {
-			if (!ent.IsValid || !ent.IsAlive || ent.IsEnemy(hero)) continue
+			if (!ent.IsValid || !ent.IsAlive || ent.IsEnemy(hero)) {
+				continue
+			}
 			const dist = hero.Distance2D(ent)
 			if (dist < bestDist) {
 				bestDist = dist
@@ -643,7 +787,9 @@ new (class TinkerCombo {
 		if (wantFountain) {
 			// fountain sendiri via buff aura terdekat — pakai Fountain entity
 			for (const ent of EntityManager.GetEntitiesByClass(Fountain)) {
-				if (!ent.IsValid || ent.IsEnemy(hero)) continue
+				if (!ent.IsValid || ent.IsEnemy(hero)) {
+					continue
+				}
 				const dist = hero.Distance2D(ent)
 				if (dist < bestDist) {
 					bestDist = dist
@@ -656,7 +802,9 @@ new (class TinkerCombo {
 
 	private castKeenConveyance(hero: Hero, target: Unit): boolean {
 		const keen = this.getKeenTeleport(hero)
-		if (!keen || keen.Cooldown > 0.1 || hero.Mana < keen.ManaCost) return false
+		if (!keen || keen.Cooldown > 0.1 || hero.Mana < keen.ManaCost) {
+			return false
+		}
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 			issuers: [hero],
@@ -670,7 +818,9 @@ new (class TinkerCombo {
 	}
 
 	private isChannelingKeen(hero: Hero): boolean {
-		if (!hero.IsChanneling) return false
+		if (!hero.IsChanneling) {
+			return false
+		}
 		const keen = this.getKeenTeleport(hero)
 		return keen !== undefined && keen.IsChanneling
 	}
@@ -700,19 +850,29 @@ new (class TinkerCombo {
 			this.farmLoopState = "idle"
 			return false
 		}
-		if (this.farmLoopSleeper.Sleeping) return false
+		if (this.farmLoopSleeper.Sleeping) {
+			return false
+		}
 
 		const manaPct = (hero.Mana / hero.MaxMana) * 100
 
 		switch (this.farmLoopState) {
 			case "idle": {
 				// Mulai: butuh keen, di fountain, mana cukup
-				if (!this.getKeenTeleport(hero)) return false
-				if (!this.isInOwnFountain(hero)) return false
-				if (manaPct < 40) return false // tunggu regen dulu
+				if (!this.getKeenTeleport(hero)) {
+					return false
+				}
+				if (!this.isInOwnFountain(hero)) {
+					return false
+				}
+				if (manaPct < 40) {
+					return false
+				} // tunggu regen dulu
 
 				const outpost = this.getKeenTarget(hero, false)
-				if (!outpost) return false
+				if (!outpost) {
+					return false
+				}
 				if (this.castKeenConveyance(hero, outpost)) {
 					this.farmLoopState = "teleporting_out"
 					this.farmLoopSleeper.Sleep(1500)
@@ -720,7 +880,9 @@ new (class TinkerCombo {
 				return true
 			}
 			case "teleporting_out": {
-				if (this.isChannelingKeen(hero)) return true // masih channel
+				if (this.isChannelingKeen(hero)) {
+					return true
+				} // masih channel
 				// Channel selesai — cek apakah sudah di jungle (tidak di fountain)
 				if (!this.isInOwnFountain(hero)) {
 					this.farmLoopState = "farming"
@@ -753,7 +915,13 @@ new (class TinkerCombo {
 				if (farmPos) {
 					if (this.autoFarmUseMarch.value) {
 						const march = hero.GetAbilityByName("tinker_march_of_the_machines")
-						if (march && march.IsValid && march.Level > 0 && march.Cooldown <= 0.1 && hero.Mana >= march.ManaCost) {
+						if (
+							march &&
+							march.IsValid &&
+							march.Level > 0 &&
+							march.Cooldown <= 0.1 &&
+							hero.Mana >= march.ManaCost
+						) {
 							this.castPosition(hero, march, this.groundCastPos(hero, march, farmPos))
 							this.farmLoopSleeper.Sleep(GameState.InputLag * 1000 + march.CastPoint * 1000 + 100)
 							return true
@@ -774,7 +942,9 @@ new (class TinkerCombo {
 				return true
 			}
 			case "teleporting_back": {
-				if (this.isChannelingKeen(hero)) return true
+				if (this.isChannelingKeen(hero)) {
+					return true
+				}
 				// Tiba di fountain
 				this.farmLoopState = "regenerating"
 				this.farmLoopSleeper.Sleep(1000)
@@ -789,7 +959,14 @@ new (class TinkerCombo {
 					const anyOnCd =
 						(march && march.IsValid && march.Level > 0 && march.Cooldown > 1) ||
 						(laser && laser.IsValid && laser.Level > 0 && laser.Cooldown > 1)
-					if (anyOnCd && rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost) {
+					if (
+						anyOnCd &&
+						rearm &&
+						rearm.IsValid &&
+						rearm.Level > 0 &&
+						rearm.Cooldown <= 0.1 &&
+						hero.Mana >= rearm.ManaCost
+					) {
 						this.castNoTarget(hero, rearm)
 						const channelDur = this.getRearmChannelDuration(hero)
 						const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
@@ -809,18 +986,30 @@ new (class TinkerCombo {
 		return false
 	}
 
-	private drawPanel(pos: Vector2, dragFlag: { val: boolean }, lines: { text: string; size: number; weight: number; color: Color }[]): void {
+	private drawPanel(
+		pos: Vector2,
+		dragFlag: { val: boolean },
+		lines: { text: string; size: number; weight: number; color: Color }[]
+	): void {
 		const mousePos = InputManager.CursorOnScreen
 		const mouseDown = InputManager.IsMouseKeyDown(VMouseKeys.MK_LBUTTON)
-		const padX = 6, padY = 4, lineH = 18
-		const maxW = Math.max(...lines.map(l => RendererSDK.GetTextSize(l.text, RendererSDK.DefaultFontName, l.size, l.weight).x))
+		const padX = 6,
+			padY = 4,
+			lineH = 18
+		const maxW = Math.max(
+			...lines.map(l => RendererSDK.GetTextSize(l.text, RendererSDK.DefaultFontName, l.size, l.weight).x)
+		)
 		const panelW = maxW + padX * 2
 		const panelH = lines.length * lineH + padY * 2
 		const panelRect = new Rectangle(pos, new Vector2(panelW, panelH))
 
 		if (mouseDown) {
-			if (!dragFlag.val && panelRect.Contains(mousePos)) dragFlag.val = true
-			if (dragFlag.val) pos.CopyFrom(mousePos.Subtract(new Vector2(panelW / 2, lineH)))
+			if (!dragFlag.val && panelRect.Contains(mousePos)) {
+				dragFlag.val = true
+			}
+			if (dragFlag.val) {
+				pos.CopyFrom(mousePos.Subtract(new Vector2(panelW / 2, lineH)))
+			}
 		} else {
 			dragFlag.val = false
 		}
@@ -829,14 +1018,25 @@ new (class TinkerCombo {
 
 		let y = pos.y + padY
 		for (const l of lines) {
-			RendererSDK.Text(l.text, new Vector2(pos.x + padX, y), l.color, RendererSDK.DefaultFontName, l.size, l.weight)
+			RendererSDK.Text(
+				l.text,
+				new Vector2(pos.x + padX, y),
+				l.color,
+				RendererSDK.DefaultFontName,
+				l.size,
+				l.weight
+			)
 			y += lineH
 		}
 	}
 
 	private Draw(): void {
-		if (ExecuteOrder.DisableHumanizer || !this.hasLocalHero) return
-		if (!LocalPlayer?.Hero?.IsAlive) return
+		if (ExecuteOrder.DisableHumanizer || !this.hasLocalHero) {
+			return
+		}
+		if (!LocalPlayer?.Hero?.IsAlive) {
+			return
+		}
 
 		// @ts-ignore
 		const comboPressed = this.comboKey.isPressed
@@ -846,18 +1046,41 @@ new (class TinkerCombo {
 		if (this.showHud.value) {
 			const statusLines = [
 				{ text: "Tinker Status", size: 14, weight: 700, color: Color.Yellow },
-				{ text: comboPressed ? "Combo: ACTIVE" : "Combo: idle", size: 13, weight: 400, color: comboPressed ? Color.Green : Color.Gray },
-				{ text: spamPressed ? "Spam March: ACTIVE" : "Spam March: idle", size: 13, weight: 400, color: spamPressed ? Color.Green : Color.Gray },
-				{ text: this.isAutoFarming ? "Auto Farm: ON" : "Auto Farm: OFF", size: 13, weight: this.isAutoFarming ? 700 : 400, color: this.isAutoFarming ? Color.Green : Color.Gray },
-				{ text: `FarmLoop: ${this.farmLoopEnabled.value ? this.farmLoopState : "off"}`, size: 11, weight: 400, color: this.farmLoopEnabled.value ? Color.Aqua : Color.Gray },
-				{ text: this.getAutoBottleDebug(), size: 11, weight: 400, color: Color.LightGray },
+				{
+					text: comboPressed ? "Combo: ACTIVE" : "Combo: idle",
+					size: 13,
+					weight: 400,
+					color: comboPressed ? Color.Green : Color.Gray
+				},
+				{
+					text: spamPressed ? "Spam March: ACTIVE" : "Spam March: idle",
+					size: 13,
+					weight: 400,
+					color: spamPressed ? Color.Green : Color.Gray
+				},
+				{
+					text: this.isAutoFarming ? "Auto Farm: ON" : "Auto Farm: OFF",
+					size: 13,
+					weight: this.isAutoFarming ? 700 : 400,
+					color: this.isAutoFarming ? Color.Green : Color.Gray
+				},
+				{
+					text: `FarmLoop: ${this.farmLoopEnabled.value ? this.farmLoopState : "off"}`,
+					size: 11,
+					weight: 400,
+					color: this.farmLoopEnabled.value ? Color.Aqua : Color.Gray
+				},
+				{ text: this.getAutoBottleDebug(), size: 11, weight: 400, color: Color.LightGray }
 			]
 			this.drawPanel(this.statusHudPos, { val: this.isDraggingStatus }, statusLines)
 		}
 
 		if (this.showDebugHud.value && debugSpellInfo.length > 0) {
 			const debugLines = debugSpellInfo.map(info => ({
-				text: info, size: 11, weight: 400 as number, color: Color.White
+				text: info,
+				size: 11,
+				weight: 400 as number,
+				color: Color.White
 			}))
 			this.drawPanel(this.debugHudPos, { val: this.isDraggingDebug }, debugLines)
 		}
@@ -866,10 +1089,14 @@ new (class TinkerCombo {
 	// --- Main Loop ---
 
 	private PostDataUpdate(delta: number): void {
-		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) return
+		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
+			return
+		}
 
 		const hero = LocalPlayer!.Hero!
-		if (!hero.IsAlive) return
+		if (!hero.IsAlive) {
+			return
+		}
 
 		// Diagnostic: refresh spell info setiap 60 frame
 		spellInfoFrameCount++
@@ -882,7 +1109,9 @@ new (class TinkerCombo {
 					const hasTarget = s.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)
 					const hasPoint = s.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_POINT)
 					const behavior = hasNoTarget ? "NOTARG" : hasTarget ? "TARGET" : hasPoint ? "POINT" : "?"
-					debugSpellInfo.push(`${s.Name} L${s.Level} CD=${s.Cooldown.toFixed(1)} MC=${s.ManaCost} ${behavior}`)
+					debugSpellInfo.push(
+						`${s.Name} L${s.Level} CD=${s.Cooldown.toFixed(1)} MC=${s.ManaCost} ${behavior}`
+					)
 				}
 			}
 			const wg = hero.GetAbilityByName("tinker_warp_grenade")
@@ -895,32 +1124,52 @@ new (class TinkerCombo {
 		// Auto Bottle in Fountain (background — jalan walau combo disabled)
 		this.handleAutoBottleFountain(hero)
 
-		if (!this.comboEnabled.value) return
+		if (!this.comboEnabled.value) {
+			return
+		}
 
 		this.handlePendingBottle(hero)
 
-		if (this.handleBlinkKey(hero)) return
-		if (this.handleSpamMarch(hero)) return
+		if (this.handleBlinkKey(hero)) {
+			return
+		}
+		if (this.handleSpamMarch(hero)) {
+			return
+		}
 
 		this.handleAutoFarmToggle()
-		if (this.handleAutoFarm(hero)) return
+		if (this.handleAutoFarm(hero)) {
+			return
+		}
 
 		// Farm Loop (Keen Conveyance) — berjalan saat auto farm aktif
-		if (this.isAutoFarming && this.handleFarmLoop(hero)) return
+		if (this.isAutoFarming && this.handleFarmLoop(hero)) {
+			return
+		}
 
 		// @ts-ignore
-		if (!this.comboKey.isPressed) return
+		if (!this.comboKey.isPressed) {
+			return
+		}
 
-		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced) return
+		if (hero.IsStunned || hero.IsHexed || hero.IsSilenced) {
+			return
+		}
 
 		const bestTarget = this.findBestTarget(hero)
-		if (!bestTarget) return
+		if (!bestTarget) {
+			return
+		}
 
 		const distToTarget = hero.Distance2D(bestTarget)
-		if (hero.IsChanneling || this.sleeper.Sleeping) return
+		if (hero.IsChanneling || this.sleeper.Sleeping) {
+			return
+		}
 
 		if (distToTarget > 800) {
-			if (this.doBlink(hero, bestTarget.Position)) return
+			if (this.doBlink(hero, bestTarget.Position)) {
+				return
+			}
 		}
 
 		const isImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
@@ -930,12 +1179,22 @@ new (class TinkerCombo {
 		if (this.itemsSelector.IsEnabled("item_black_king_bar") && distToTarget <= 900) {
 			const bkb = hero.Items.find(i => i.Name === "item_black_king_bar")
 			if (
-				bkb && bkb.IsValid && bkb.CanBeUsable && !hero.IsMuted &&
-				bkb.Cooldown <= 0.1 && hero.Mana >= bkb.ManaCost &&
+				bkb &&
+				bkb.IsValid &&
+				bkb.CanBeUsable &&
+				!hero.IsMuted &&
+				bkb.Cooldown <= 0.1 &&
+				hero.Mana >= bkb.ManaCost &&
 				!hero.HasBuffByName("modifier_black_king_bar_immune")
 			) {
 				const nearbyEnemies = EntityManager.GetEntitiesByClass(Hero).filter(
-					e => e.IsValid && e.IsAlive && e.IsVisible && e.IsEnemy(hero) && !e.IsIllusion && hero.Distance2D(e) <= 900
+					e =>
+						e.IsValid &&
+						e.IsAlive &&
+						e.IsVisible &&
+						e.IsEnemy(hero) &&
+						!e.IsIllusion &&
+						hero.Distance2D(e) <= 900
 				)
 				if (nearbyEnemies.length > 0) {
 					this.castNoTarget(hero, bkb)
@@ -953,44 +1212,75 @@ new (class TinkerCombo {
 		if (!isImmune) {
 			if (this.itemsSelector.IsEnabled("item_sheepstick") && distToTarget <= 850) {
 				const hex = this.tryCastItem(hero, "item_sheepstick", bestTarget)
-				if (hex) { this.sleeper.Sleep(GameState.InputLag * 1000 + hex.CastPoint * 1000 + 100); return }
+				if (hex) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + hex.CastPoint * 1000 + 100)
+					return
+				}
 			}
 			if (this.itemsSelector.IsEnabled("item_ethereal_blade") && distToTarget <= 850) {
 				const eth = this.tryCastItem(hero, "item_ethereal_blade", bestTarget)
-				if (eth) { this.sleeper.Sleep(GameState.InputLag * 1000 + eth.CastPoint * 1000 + 100); return }
+				if (eth) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + eth.CastPoint * 1000 + 100)
+					return
+				}
 			}
 			if (this.itemsSelector.IsEnabled("item_dagon")) {
 				const dagon = this.getDagonItem(hero)
-				if (dagon && dagon.IsValid && dagon.CanBeUsable && hero.Mana >= dagon.ManaCost && dagon.Cooldown <= 0.1) {
+				if (
+					dagon &&
+					dagon.IsValid &&
+					dagon.CanBeUsable &&
+					hero.Mana >= dagon.ManaCost &&
+					dagon.Cooldown <= 0.1
+				) {
 					const r = dagon.CastRange > 0 ? dagon.CastRange : 800
-					if (distToTarget <= r) { this.castTarget(hero, dagon, bestTarget); this.sleeper.Sleep(GameState.InputLag * 1000 + dagon.CastPoint * 1000 + 100); return }
+					if (distToTarget <= r) {
+						this.castTarget(hero, dagon, bestTarget)
+						this.sleeper.Sleep(GameState.InputLag * 1000 + dagon.CastPoint * 1000 + 100)
+						return
+					}
 				}
 			}
 		}
 		if (this.itemsSelector.IsEnabled("item_shivas_guard") && distToTarget <= 900) {
 			const sh = this.tryCastItemNoTarget(hero, "item_shivas_guard")
-			if (sh) { this.sleeper.Sleep(GameState.InputLag * 1000 + sh.CastPoint * 1000 + 100); return }
+			if (sh) {
+				this.sleeper.Sleep(GameState.InputLag * 1000 + sh.CastPoint * 1000 + 100)
+				return
+			}
 		}
 
 		// --- Spell Combo ---
 		// Iterate combo order grid (urutan sudah disortir by priority dari grid)
-		const gridOrder: string[] = this.comboSequenceGrid
-			? this.comboSequenceGrid.values
-			: COMBO_SPELLS
+		const gridOrder: string[] = this.comboSequenceGrid ? this.comboSequenceGrid.values : COMBO_SPELLS
 
 		for (const spellName of gridOrder) {
-			if (!COMBO_SPELLS.includes(spellName)) continue
-			if (this.comboSequenceGrid && !this.comboSequenceGrid.IsEnabled(spellName)) continue
+			if (!COMBO_SPELLS.includes(spellName)) {
+				continue
+			}
+			if (this.comboSequenceGrid && !this.comboSequenceGrid.IsEnabled(spellName)) {
+				continue
+			}
 
 			const ability = hero.GetAbilityByName(spellName)
-			if (!ability || !ability.IsValid || ability.IsHidden) continue
-			if (ability.Cooldown > 0.1) continue
-			if (hero.Mana < ability.ManaCost) continue
+			if (!ability || !ability.IsValid || ability.IsHidden) {
+				continue
+			}
+			if (ability.Cooldown > 0.1) {
+				continue
+			}
+			if (hero.Mana < ability.ManaCost) {
+				continue
+			}
 
 			switch (spellName) {
 				case "tinker_laser": {
-					if (isImmune) continue
-					if (distToTarget > 650) continue
+					if (isImmune) {
+						continue
+					}
+					if (distToTarget > 650) {
+						continue
+					}
 					this.castTarget(hero, ability, bestTarget)
 					this.sleepAfterCast(ability)
 					return
@@ -1006,15 +1296,23 @@ new (class TinkerCombo {
 					return
 				}
 				case "tinker_warp_grenade": {
-					if (!this.hasWarpGrenade(hero)) continue
-					if (isImmune) continue
-					if (distToTarget > 650) continue
+					if (!this.hasWarpGrenade(hero)) {
+						continue
+					}
+					if (isImmune) {
+						continue
+					}
+					if (distToTarget > 650) {
+						continue
+					}
 					this.castTarget(hero, ability, bestTarget)
 					this.sleepAfterCast(ability)
 					return
 				}
 				case "tinker_rearm": {
-					if (!this.shouldRearm(hero)) continue
+					if (!this.shouldRearm(hero)) {
+						continue
+					}
 					this.castNoTarget(hero, ability)
 					const channelDur = this.getRearmChannelDuration(hero)
 					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
@@ -1038,7 +1336,9 @@ new (class TinkerCombo {
 		let best: Hero | undefined
 		let minDist = Infinity
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-			if (!enemy.IsValid || !enemy.IsAlive || !enemy.IsVisible || !enemy.IsEnemy(hero) || enemy.IsIllusion) continue
+			if (!enemy.IsValid || !enemy.IsAlive || !enemy.IsVisible || !enemy.IsEnemy(hero) || enemy.IsIllusion) {
+				continue
+			}
 			const dc = enemy.Position.Distance2D(mousePos)
 			const dh = hero.Distance2D(enemy)
 			if (dc < this.comboRadius.value && dh <= 1200 && dc < minDist) {

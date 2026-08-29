@@ -36,7 +36,7 @@ new (class VisageCombo {
 		80,
 		10,
 		100,
-		5,
+		0,
 		"Target distance percentage of attack range to maintain during Orb Walk"
 	)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(

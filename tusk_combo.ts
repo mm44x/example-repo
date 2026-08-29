@@ -68,7 +68,7 @@ new (class TuskCombo {
 		80,
 		10,
 		100,
-		5,
+		0,
 		"Target distance percentage of attack range to maintain during Orb Walk"
 	)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
@@ -251,8 +251,6 @@ new (class TuskCombo {
 			return
 		}
 
-
-
 		// Target Selection & Verification
 		let bestTarget: Hero | undefined
 		const lockTarget = this.lockTargetEnabled.value
@@ -279,7 +277,11 @@ new (class TuskCombo {
 					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
 						const distToCursor = enemy.Position.Distance2D(mousePos)
 						const distToHero = hero.Distance2D(enemy)
-						if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
+						if (
+							distToCursor < this.comboRadius.value &&
+							distToHero <= maxCastRange &&
+							distToCursor < minDist
+						) {
 							minDist = distToCursor
 							foundTarget = enemy
 						}

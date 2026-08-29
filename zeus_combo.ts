@@ -64,19 +64,19 @@ new (class ZeusCombo {
 		true,
 		"Locks onto the initial target while combo key is pressed"
 	)
-	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 900, 300, 1800, 50)
+	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 900, 300, 1800, 0)
 	private readonly useBlink = this.entry.AddToggle(
 		"Use Blink in Combo",
 		true,
 		"Blink towards target if out of spell range"
 	)
-	private readonly blinkMinDistance = this.entry.AddSlider("Blink Min Distance", 450, 200, 900, 50)
+	private readonly blinkMinDistance = this.entry.AddSlider("Blink Min Distance", 450, 200, 900, 0)
 	private readonly useUltInCombo = this.entry.AddToggle(
 		"Use Wrath (R) in Combo",
 		false,
 		"Cast Thundergod's Wrath during combo if target HP is below threshold"
 	)
-	private readonly ultComboHpThreshold = this.entry.AddSlider("Wrath (R) Target HP %", 35, 10, 80, 5)
+	private readonly ultComboHpThreshold = this.entry.AddSlider("Wrath (R) Target HP %", 35, 10, 80, 0)
 
 	// Items Selection for Combo
 	private readonly itemsSelector = this.entry.AddImageSelector(
@@ -118,7 +118,7 @@ new (class ZeusCombo {
 		true,
 		"Follow moving targets while weaving attacks/Lightning Hands"
 	)
-	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 5)
+	private readonly smartOrbWalkDistancePct = this.entry.AddSlider("Orb Walk Safe Distance %", 80, 10, 100, 0)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle("Stop-to-Cancel Backswing", false)
 
 	// ==========================================
@@ -257,7 +257,7 @@ new (class ZeusCombo {
 		["Harass Heroes Only", "Last Hit Creeps + Harass"],
 		1
 	)
-	private readonly autoQMinManaPct = this.autoQNode.AddSlider("Min Mana %", 40, 10, 90, 5)
+	private readonly autoQMinManaPct = this.autoQNode.AddSlider("Min Mana %", 40, 10, 90, 0)
 
 	// Defensive Heavenly Jump
 	private readonly jumpNode = this.entry.AddNode("Defensive Heavenly Jump")
@@ -266,8 +266,8 @@ new (class ZeusCombo {
 		true,
 		"Auto jump when enemies get too close"
 	)
-	private readonly autoJumpEnemyRange = this.jumpNode.AddSlider("Trigger Enemy Distance", 350, 200, 600, 25)
-	private readonly autoJumpHpThreshold = this.jumpNode.AddSlider("Trigger Zeus HP %", 50, 10, 100, 5)
+	private readonly autoJumpEnemyRange = this.jumpNode.AddSlider("Trigger Enemy Distance", 350, 200, 600, 0)
+	private readonly autoJumpHpThreshold = this.jumpNode.AddSlider("Trigger Zeus HP %", 50, 10, 100, 0)
 
 	// HUD & Visuals
 	private readonly showTargetCircle = this.entry.AddToggle("Draw Target Lock Indicator", true)

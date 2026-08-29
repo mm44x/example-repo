@@ -95,7 +95,14 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "tusk_walrus_punch", label: "Walrus PUNCH!", piercesBkb: true, castType: "target", castRange: 150 },
 	{ name: "tiny_toss", label: "Toss (Tiny)", piercesBkb: true, castType: "target", castRange: 900 },
 	{ name: "zuus_lightning_bolt", label: "Lightning Bolt (Zeus)", piercesBkb: false, castType: "target" },
-	{ name: "muerta_dead_shot", label: "Dead Shot (Muerta)", piercesBkb: false, castType: "target" }
+	{ name: "muerta_dead_shot", label: "Dead Shot (Muerta)", piercesBkb: false, castType: "target" },
+	{
+		name: "tinker_warp_grenade",
+		label: "Warp Grenade (Tinker)",
+		piercesBkb: false,
+		castType: "target",
+		castRange: 700
+	}
 ]
 
 new (class AntiInitiationUtility {

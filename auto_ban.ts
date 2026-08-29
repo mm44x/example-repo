@@ -1,16 +1,10 @@
 import {
 	Attributes,
 	Color,
-	DOTACustomHeroPickRulesPhase,
-	DOTAGameMode,
-	DOTAGameState,
 	EventsSDK,
 	GameRules,
-	GameState,
 	Menu,
 	RendererSDK,
-	TickSleeper,
-	TurboHeroPickRules,
 	UnitData,
 	Vector2
 } from "github.com/octarine-public/wrapper/index"
@@ -19,16 +13,10 @@ new (class AutoBanUtility {
 	private readonly entry = Menu.AddEntry("mm44x")
 	private readonly tree = this.entry.AddNode("Auto Ban Heroes")
 	private readonly enabled = this.tree.AddToggle("Enabled", true, "Master ON/OFF toggle for Auto Ban")
-	private readonly banStrategy = this.tree.AddDropdown(
-		"Ban Strategy",
-		["Ban First Available", "Ban All Selected (Turbo/Custom)", "Random From Selected"],
-		1,
-		"How to prioritize bans when multiple heroes are selected"
-	)
 	private readonly debugToggle = this.tree.AddToggle(
 		"Debug Overlay",
 		true,
-		"Display drafting & ban state on screen during hero selection",
+		"Display drafting state and selected bans on screen",
 		10
 	)
 
@@ -43,19 +31,11 @@ new (class AutoBanUtility {
 	private universalSelector?: Menu.ImageSelector
 
 	private populated = false
-	private banAttemptCount = 0
-	private lastBanAttemptTime = 0
-	private readonly sleeper = new TickSleeper()
-
-	private debugLines: string[] = []
-	private debugStatus = ""
 
 	constructor() {
 		EventsSDK.on("UnitAbilityDataUpdated", this.populateAndRefresh.bind(this))
 		EventsSDK.on("ServerInfo", this.populateAndRefresh.bind(this))
-		EventsSDK.on("GameStateChanged", this.onGameStateChanged.bind(this))
-		EventsSDK.on("PostDataUpdate", this.onPostDataUpdate.bind(this))
-		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStateChanged", this.syncNativeBans.bind(this))
 		EventsSDK.on("Draw", this.onDraw.bind(this))
 
 		this.enabled.OnValue(() => {
@@ -69,8 +49,12 @@ new (class AutoBanUtility {
 		if (!this.debugToggle.value) {
 			return
 		}
-		const state = GameRules?.GameState
-		if (!this.isSelectionState(state)) {
+		const gameRules = GameRules
+		if (!gameRules) {
+			return
+		}
+		const state = gameRules.GameState
+		if (state === undefined || state > 4) {
 			return
 		}
 
@@ -82,13 +66,24 @@ new (class AutoBanUtility {
 		const x = 50
 		const y = 200
 
-		const allText = [...this.debugLines]
-		if (this.debugStatus) {
-			allText.push(`  Status: ${this.debugStatus}`)
-		}
+		const selectedIds = this.getSelectedHeroIds()
+		const selectedNames = selectedIds
+			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
+			.join(", ")
+
+		const bannedInGame = (gameRules.BannedHeroesIDs ?? [])
+			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
+			.join(", ")
+
+		const lines = [
+			`[Auto Ban] Enabled=${this.enabled.value}`,
+			`  Selected (${selectedIds.length}): [${selectedNames || "NONE"}]`,
+			`  Game State: ${state} | Mode: ${gameRules.GameMode}`,
+			`  Server Banned: [${bannedInGame || "None"}]`
+		]
 
 		let maxW = 0
-		for (const line of allText) {
+		for (const line of lines) {
 			const sz = RendererSDK.GetTextSize(line, RendererSDK.DefaultFontName, fontSize)
 			if (sz.x > maxW) {
 				maxW = sz.x
@@ -96,9 +91,8 @@ new (class AutoBanUtility {
 		}
 
 		const rectW = maxW + padX * 2
-		const rectH = allText.length * textH + padY * 2
+		const rectH = lines.length * textH + padY * 2
 
-		// Solid 100% opaque background (no transparency)
 		RendererSDK.FilledRect(new Vector2(x - padX, y - padY), new Vector2(rectW, rectH), new Color(15, 18, 24, 255))
 		RendererSDK.OutlinedRect(
 			new Vector2(x - padX, y - padY),
@@ -108,97 +102,12 @@ new (class AutoBanUtility {
 		)
 
 		let ly = y
-		for (let i = 0; i < allText.length; i++) {
-			const line = allText[i]
-			const color = i === 0 ? Color.Yellow : i === allText.length - 1 ? Color.Green : Color.White
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i]
+			const color = i === 0 ? Color.Yellow : Color.White
 			RendererSDK.Text(line, new Vector2(x, ly), color)
 			ly += textH
 		}
-	}
-
-	private isSelectionState(state?: DOTAGameState): boolean {
-		if (state === undefined) {
-			return false
-		}
-		return (
-			state === DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION ||
-			state === DOTAGameState.DOTA_GAMERULES_STATE_PLAYER_DRAFT ||
-			state === DOTAGameState.DOTA_GAMERULES_STATE_CUSTOM_GAME_SETUP ||
-			state === DOTAGameState.DOTA_GAMERULES_STATE_STRATEGY_TIME ||
-			state === DOTAGameState.DOTA_GAMERULES_STATE_WAIT_FOR_PLAYERS_TO_LOAD
-		)
-	}
-
-	private isBanPhaseActive(): boolean {
-		const gameRules = GameRules
-		if (!gameRules) {
-			return false
-		}
-
-		const state = gameRules.GameState
-		if (
-			state !== DOTAGameState.DOTA_GAMERULES_STATE_HERO_SELECTION &&
-			state !== DOTAGameState.DOTA_GAMERULES_STATE_CUSTOM_GAME_SETUP &&
-			state !== DOTAGameState.DOTA_GAMERULES_STATE_PLAYER_DRAFT
-		) {
-			return false
-		}
-
-		// 1. Direct Turbo rules entity check
-		if (TurboHeroPickRules && TurboHeroPickRules.IsValid) {
-			return TurboHeroPickRules.Phase === DOTACustomHeroPickRulesPhase.Ban
-		}
-
-		// 2. Built-in wrapper check
-		if (gameRules.IsBanPhase) {
-			return true
-		}
-
-		// 3. Fallback for Turbo mode
-		if (gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_TURBO) {
-			return TurboHeroPickRules?.Phase !== DOTACustomHeroPickRulesPhase.Pick
-		}
-
-		// 4. All Draft fallback
-		if (
-			gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_ALL_DRAFT ||
-			gameRules.GameMode === DOTAGameMode.DOTA_GAMEMODE_AP
-		) {
-			return gameRules.AllDraftPhase === 0
-		}
-
-		return true
-	}
-
-	private onGameStateChanged(state: DOTAGameState): void {
-		if (this.isSelectionState(state)) {
-			this.banAttemptCount = 0
-			this.lastBanAttemptTime = 0
-			this.syncNativeBans()
-			this.executeDraftBans()
-		}
-	}
-
-	private onPostDataUpdate(delta: number): void {
-		if (delta === 0) {
-			return
-		}
-
-		const state = GameRules?.GameState
-		if (this.isSelectionState(state)) {
-			this.syncNativeBans()
-			this.updateDebugInfo()
-
-			if (this.enabled.value && this.isBanPhaseActive() && !this.sleeper.Sleeping) {
-				this.executeDraftBans()
-			}
-		}
-	}
-
-	private onGameEnded(): void {
-		this.banAttemptCount = 0
-		this.lastBanAttemptTime = 0
-		this.sleeper.Sleep(0)
 	}
 
 	private getSelectedHeroIds(): number[] {
@@ -238,187 +147,6 @@ new (class AutoBanUtility {
 		} else {
 			ToggleBanHeroes(false)
 		}
-	}
-
-	/**
-	 * Multi-vector in-draft execution for Turbo Mode and Custom Games.
-	 */
-	private executeDraftBans(): void {
-		if (!this.enabled.value) {
-			return
-		}
-
-		const heroIds = this.getSelectedHeroIds()
-		if (heroIds.length === 0) {
-			this.debugStatus = "No heroes selected in menu"
-			return
-		}
-
-		const gameRules = GameRules
-		const alreadyBanned = gameRules?.BannedHeroesIDs ?? []
-		const availableIds = heroIds.filter(id => !alreadyBanned.includes(id))
-
-		if (availableIds.length === 0) {
-			this.debugStatus = `Target heroes already banned: [${heroIds.join(", ")}]`
-			return
-		}
-
-		const now = Date.now()
-		if (now - this.lastBanAttemptTime < 250) {
-			return
-		}
-
-		// Vector 1: Native core hook
-		ToggleBanHeroes(availableIds)
-
-		const strategy = this.banStrategy.SelectedID
-		let targetIds: number[] = []
-
-		if (strategy === 0) {
-			targetIds = [availableIds[0]]
-		} else if (strategy === 1) {
-			targetIds = availableIds
-		} else if (strategy === 2) {
-			const randomIndex = Math.floor(Math.random() * availableIds.length)
-			targetIds = [availableIds[randomIndex]]
-		}
-
-		// Find Panorama Root Panels (Hud & Dashboard)
-		const targetPanels: any[] = []
-		try {
-			if (typeof Panorama !== "undefined" && Panorama) {
-				const hud = Panorama.FindRootPanel("DotaHud")
-				const dash = Panorama.FindRootPanel("DotaDashboard")
-				if (hud) {
-					targetPanels.push(hud)
-				}
-				if (dash) {
-					targetPanels.push(dash)
-				}
-			}
-		} catch {
-			// ignore
-		}
-
-		for (const id of targetIds) {
-			const heroName = UnitData.GetHeroNameByID(id)
-
-			// Vector 2: Panorama DOM Traversal & Event Dispatch script
-			for (const panel of targetPanels) {
-				try {
-					Panorama.ExecuteScript(
-						panel,
-						`(function() {
-							var heroId = ${id};
-							var heroName = "${heroName}";
-							try { $.DispatchEvent('DOTACustomHeroPickRulesHeroBanned', heroId); } catch(e) {}
-							try { $.DispatchEvent('DOTACustomHeroPickRulesBanHero', heroId); } catch(e) {}
-							try { $.DispatchEvent('DOTAHeroSelectionBanHero', heroId); } catch(e) {}
-							try { $.DispatchEvent('DOTABanHero', heroId); } catch(e) {}
-							try { $.DispatchEvent('DOTAPickHero', heroId, false, true); } catch(e) {}
-							try { $.DispatchEvent('DOTAPickHero', heroId, true); } catch(e) {}
-							try { $.DispatchEvent('DOTAHeroSelected', heroId, true); } catch(e) {}
-							try { $.DispatchEvent('DOTASuggestHero', heroId, true); } catch(e) {}
-
-							try {
-								var context = $.GetContextPanel();
-								if (context) {
-									var card = context.FindChildTraverse("HeroCard_" + heroName) || 
-											   context.FindChildTraverse("HeroCard" + heroId) ||
-											   context.FindChildTraverse("HeroCard_" + heroId);
-									if (card) {
-										$.DispatchEvent('Activated', card, 'mouse');
-										$.DispatchEvent('DOTAHeroCardClicked', card, heroId);
-									}
-									var banBtn = context.FindChildTraverse("BanButton") || 
-												 context.FindChildTraverse("HeroBanButton") ||
-												 context.FindChildTraverse("BanHeroButton") ||
-												 context.FindChildTraverse("LockInButton");
-									if (banBtn) {
-										$.DispatchEvent('Activated', banBtn, 'mouse');
-									}
-								}
-							} catch(e) {}
-
-							try {
-								if (typeof GameEvents !== 'undefined' && GameEvents) {
-									GameEvents.SendCustomGameEventToServer('dota_hero_ban', { hero_id: heroId, hero_name: heroName });
-									GameEvents.SendCustomGameEventToServer('custom_hero_pick_rules_hero_banned', { hero_id: heroId });
-									GameEvents.SendCustomGameEventToServer('turbo_hero_banned', { hero_id: heroId });
-								}
-							} catch(e) {}
-						})();`
-					)
-				} catch {
-					// ignore
-				}
-			}
-
-			// Vector 3: Direct Panorama.DispatchEventAsync
-			try {
-				if (typeof Panorama !== "undefined" && Panorama) {
-					for (const panel of targetPanels) {
-						Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesHeroBanned(${id})`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTACustomHeroPickRulesBanHero(${id})`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTAHeroSelectionBanHero(${id})`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTABanHero(${id})`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTAHeroSelected(${id}, true)`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTAPickHero(${id}, false, true)`, panel, 0)
-						Panorama.DispatchEventAsync(`DOTASuggestHero(${id}, true)`, panel, 0)
-					}
-				}
-			} catch {
-				// ignore
-			}
-
-			// Vector 4: CustomGameEvents server fire
-			try {
-				if (typeof CustomGameEvents !== "undefined" && CustomGameEvents) {
-					const eventMap = new Map<string, any>()
-					eventMap.set("hero_id", id)
-					eventMap.set("hero_name", heroName)
-					CustomGameEvents.FireEventToServer("dota_hero_ban", eventMap)
-
-					const banEvent = new Map<string, any>()
-					banEvent.set("hero_id", id)
-					CustomGameEvents.FireEventToServer("custom_hero_pick_rules_hero_banned", banEvent)
-					CustomGameEvents.FireEventToServer("turbo_hero_banned", banEvent)
-				}
-			} catch {
-				// ignore
-			}
-
-			// Vector 5: Console Command triggers
-			if (heroName) {
-				GameState.ExecuteCommand(`dota_select_hero ${heroName}`)
-			}
-		}
-
-		this.banAttemptCount++
-		this.lastBanAttemptTime = now
-		this.debugStatus = `Banning [${targetIds
-			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
-			.join(", ")}] (Attempt #${this.banAttemptCount})`
-		this.sleeper.Sleep(300)
-	}
-
-	private updateDebugInfo(): void {
-		const gameRules = GameRules
-		const gameState = gameRules?.GameState
-		const gameMode = gameRules?.GameMode
-		const isBan = this.isBanPhaseActive()
-		const selectedIds = this.getSelectedHeroIds()
-		const selectedNames = selectedIds
-			.map(id => UnitData.GetHeroNameByID(id).replace("npc_dota_hero_", "") || id)
-			.join(", ")
-
-		this.debugLines = [
-			`[Auto Ban Turbo/AllDraft] Enabled=${this.enabled.value}`,
-			`  Selected (${selectedIds.length}): [${selectedNames || "NONE"}]`,
-			`  GameState=${gameState} | Mode=${gameMode} (23=Turbo)`,
-			`  IsBanPhase=${isBan} | TurboPhase=${TurboHeroPickRules?.Phase}`,
-			`  Server Banned IDs: [${gameRules?.BannedHeroesIDs?.join(", ") ?? ""}]`
-		]
 	}
 
 	private populateAndRefresh(): void {

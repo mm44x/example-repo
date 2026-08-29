@@ -54,7 +54,19 @@ new (class InvokerCombo {
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
-		["item_blink", "item_cyclone", "item_wind_waker", "item_sheepstick", "item_orchid", "item_bloodthorn", "item_nullifier", "item_urn_of_shadows", "item_spirit_vessel", "item_shivas_guard", "item_refresher"],
+		[
+			"item_blink",
+			"item_cyclone",
+			"item_wind_waker",
+			"item_sheepstick",
+			"item_orchid",
+			"item_bloodthorn",
+			"item_nullifier",
+			"item_urn_of_shadows",
+			"item_spirit_vessel",
+			"item_shivas_guard",
+			"item_refresher"
+		],
 		new Map([
 			["item_blink", true],
 			["item_cyclone", true],
@@ -81,7 +93,7 @@ new (class InvokerCombo {
 		80,
 		10,
 		100,
-		5,
+		0,
 		"Target distance percentage of attack range to maintain during Orb Walk"
 	)
 	private readonly smartOrbWalkStopCancel = this.entry.AddToggle(
@@ -175,17 +187,8 @@ new (class InvokerCombo {
 			const displayName = autoSkillSpells[i]
 			const internalName = autoSkillInternalNames[i]
 			const icon = `panorama/images/spellicons/${internalName}_png.vtex_c`
-			const spellNode = this.autoSkillNode.AddNode(
-				displayName,
-				icon,
-				"",
-				0
-			)
-			const hotkey = spellNode.AddKeybind(
-				"Hotkey",
-				"",
-				`Hotkey to trigger ${displayName}`
-			)
+			const spellNode = this.autoSkillNode.AddNode(displayName, icon, "", 0)
+			const hotkey = spellNode.AddKeybind("Hotkey", "", `Hotkey to trigger ${displayName}`)
 			const mode = spellNode.AddDropdown(
 				"Mode",
 				["Auto Use", "Only Craft"],
@@ -302,8 +305,12 @@ new (class InvokerCombo {
 
 	private angleDifference(a: number, b: number): number {
 		let diff = a - b
-		while (diff < -Math.PI) diff += Math.PI * 2
-		while (diff > Math.PI) diff -= Math.PI * 2
+		while (diff < -Math.PI) {
+			diff += Math.PI * 2
+		}
+		while (diff > Math.PI) {
+			diff -= Math.PI * 2
+		}
 		return diff
 	}
 
@@ -319,9 +326,7 @@ new (class InvokerCombo {
 			origin = origin.Add(target.Forward.MultiplyScalar(speed * floeDelay))
 		}
 
-		let direction = target.IsMoving
-			? target.Forward.Clone()
-			: origin.Subtract(hero.Position).Normalize()
+		const direction = target.IsMoving ? target.Forward.Clone() : origin.Subtract(hero.Position).Normalize()
 
 		const end = origin.Add(direction.MultiplyScalar(trailLength))
 		return { origin, end }
@@ -416,7 +421,9 @@ new (class InvokerCombo {
 
 	private invokeSpell(hero: Hero, spellName: string, invokeAbility: Ability): boolean {
 		const orbs = SPELL_ORBS[spellName]
-		if (!orbs) return false
+		if (!orbs) {
+			return false
+		}
 
 		for (const orbName of orbs) {
 			const orbAbility = hero.GetAbilityByName(`invoker_${orbName}`)
@@ -444,12 +451,7 @@ new (class InvokerCombo {
 		return true
 	}
 
-	private castInvokerSpell(
-		hero: Hero,
-		ability: Ability,
-		target: Hero,
-		liftBuff: any
-	): boolean {
+	private castInvokerSpell(hero: Hero, ability: Ability, target: Hero, liftBuff: any): boolean {
 		const name = ability.Name
 
 		// 1. If target is lifted in the air by Tornado or Cyclone
@@ -474,17 +476,15 @@ new (class InvokerCombo {
 								isPlayerInput: false
 							})
 						}
-					} else {
-						if (ability.AltCastState) {
-							ExecuteOrder.PrepareOrder({
-								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
-								issuers: [hero],
-								ability: ability.Index,
-								queue: false,
-								showEffects: false,
-								isPlayerInput: false
-							})
-						}
+					} else if (ability.AltCastState) {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+							issuers: [hero],
+							ability: ability.Index,
+							queue: false,
+							showEffects: false,
+							isPlayerInput: false
+						})
 					}
 
 					if (this.executeComboAbility(hero, ability, target, true, target.Position)) {
@@ -565,17 +565,15 @@ new (class InvokerCombo {
 						isPlayerInput: false
 					})
 				}
-			} else {
-				if (ability.AltCastState) {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
-						issuers: [hero],
-						ability: ability.Index,
-						queue: false,
-						showEffects: false,
-						isPlayerInput: false
-					})
-				}
+			} else if (ability.AltCastState) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+					issuers: [hero],
+					ability: ability.Index,
+					queue: false,
+					showEffects: false,
+					isPlayerInput: false
+				})
 			}
 			const ssPos = target.Position.Add(target.Forward.MultiplyScalar(target.IsMoving ? 150 : 0))
 			if (this.executeComboAbility(hero, ability, target, true, ssPos)) {
@@ -608,50 +606,49 @@ new (class InvokerCombo {
 				console.log("[InvokerCombo] Ice Floe casted!")
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 150)
 				return true
-			} else {
-				// Vanilla Ice Wall: no target, spawns perpendicular wall in front of hero
-				const dist = hero.Distance2D(target)
-				if (dist <= 520) {
-					const toTarget = target.Position.Subtract(hero.Position)
-					const currentForward = hero.Forward
-					const proj = toTarget.Dot(currentForward) // projection along forward
+			}
+			// Vanilla Ice Wall: no target, spawns perpendicular wall in front of hero
+			const dist = hero.Distance2D(target)
+			if (dist <= 520) {
+				const toTarget = target.Position.Subtract(hero.Position)
+				const currentForward = hero.Forward
+				const proj = toTarget.Dot(currentForward) // projection along forward
 
-					// If we are already facing the target nicely (projection around 200)
-					if (Math.abs(proj - 200) < 60) {
-						if (this.executeComboAbility(hero, ability, target)) {
-							this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-							return true
-						}
-					} else {
-						// Calculate required turn angle
-						const alpha = Math.atan2(toTarget.y, toTarget.x)
-						const cosTheta = 200 / dist
-						const clampedCos = Math.max(-1, Math.min(1, cosTheta))
-						const theta = Math.acos(clampedCos)
-
-						const phi1 = alpha + theta
-						const phi2 = alpha - theta
-
-						const currentAngle = Math.atan2(currentForward.y, currentForward.x)
-						const diff1 = Math.abs(this.angleDifference(phi1, currentAngle))
-						const diff2 = Math.abs(this.angleDifference(phi2, currentAngle))
-						const bestPhi = diff1 < diff2 ? phi1 : phi2
-
-						const faceDir = new Vector3(Math.cos(bestPhi), Math.sin(bestPhi), 0)
-						const facePos = hero.Position.Add(faceDir.MultiplyScalar(100))
-
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-							issuers: [hero],
-							position: facePos,
-							queue: false,
-							showEffects: false,
-							isPlayerInput: false
-						})
-
-						this.sleeper.Sleep(100)
+				// If we are already facing the target nicely (projection around 200)
+				if (Math.abs(proj - 200) < 60) {
+					if (this.executeComboAbility(hero, ability, target)) {
+						this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 						return true
 					}
+				} else {
+					// Calculate required turn angle
+					const alpha = Math.atan2(toTarget.y, toTarget.x)
+					const cosTheta = 200 / dist
+					const clampedCos = Math.max(-1, Math.min(1, cosTheta))
+					const theta = Math.acos(clampedCos)
+
+					const phi1 = alpha + theta
+					const phi2 = alpha - theta
+
+					const currentAngle = Math.atan2(currentForward.y, currentForward.x)
+					const diff1 = Math.abs(this.angleDifference(phi1, currentAngle))
+					const diff2 = Math.abs(this.angleDifference(phi2, currentAngle))
+					const bestPhi = diff1 < diff2 ? phi1 : phi2
+
+					const faceDir = new Vector3(Math.cos(bestPhi), Math.sin(bestPhi), 0)
+					const facePos = hero.Position.Add(faceDir.MultiplyScalar(100))
+
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
+						issuers: [hero],
+						position: facePos,
+						queue: false,
+						showEffects: false,
+						isPlayerInput: false
+					})
+
+					this.sleeper.Sleep(100)
+					return true
 				}
 			}
 		} else if (name === "invoker_alacrity") {
@@ -667,11 +664,9 @@ new (class InvokerCombo {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 				return true
 			}
-		} else {
-			if (this.executeComboAbility(hero, ability, target)) {
-				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-				return true
-			}
+		} else if (this.executeComboAbility(hero, ability, target)) {
+			this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+			return true
 		}
 
 		return false
@@ -726,7 +721,12 @@ new (class InvokerCombo {
 
 				if (!isActive) {
 					// Need to invoke first
-					if (!invokeAbility || !invokeAbility.IsValid || invokeAbility.Cooldown > 0.1 || hero.Mana < invokeAbility.ManaCost) {
+					if (
+						!invokeAbility ||
+						!invokeAbility.IsValid ||
+						invokeAbility.Cooldown > 0.1 ||
+						hero.Mana < invokeAbility.ManaCost
+					) {
 						continue
 					}
 					if (this.invokeSpell(hero, spellName, invokeAbility)) {
@@ -773,21 +773,23 @@ new (class InvokerCombo {
 
 				if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
 					const isSelfCast = spellName === "invoker_alacrity"
-					const castTarget = isSelfCast ? hero : (() => {
-						const enemies = EntityManager.GetEntitiesByClass(Hero)
-						let best: Hero | undefined
-						let minDist = Infinity
-						for (const enemy of enemies) {
-							if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
-								const d = enemy.Position.Distance2D(cursorPos)
-								if (d < 800 && d < minDist) {
-									best = enemy
-									minDist = d
+					const castTarget = isSelfCast
+						? hero
+						: (() => {
+								const enemies = EntityManager.GetEntitiesByClass(Hero)
+								let best: Hero | undefined
+								let minDist = Infinity
+								for (const enemy of enemies) {
+									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
+										const d = enemy.Position.Distance2D(cursorPos)
+										if (d < 800 && d < minDist) {
+											best = enemy
+											minDist = d
+										}
+									}
 								}
-							}
-						}
-						return best
-					})()
+								return best
+						  })()
 
 					if (castTarget) {
 						ExecuteOrder.PrepareOrder({
@@ -832,7 +834,6 @@ new (class InvokerCombo {
 					return
 				}
 			}
-
 		} // end channeling/stunned check
 
 		// --- Pending Auto Skill Cast ---
@@ -841,7 +842,13 @@ new (class InvokerCombo {
 			if (this.pendingAutoSkill === "invoker_ice_wall") {
 				ability = this.getActiveIceWallAbility(hero)
 			}
-			if (ability && ability.IsValid && !ability.IsHidden && ability.Cooldown <= 0.1 && hero.Mana >= ability.ManaCost) {
+			if (
+				ability &&
+				ability.IsValid &&
+				!ability.IsHidden &&
+				ability.Cooldown <= 0.1 &&
+				hero.Mana >= ability.ManaCost
+			) {
 				const cursorPos = this.autoSkillCursorPos ?? InputManager.CursorOnWorld
 
 				if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_NO_TARGET)) {
@@ -856,21 +863,23 @@ new (class InvokerCombo {
 					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} (no target)`)
 				} else if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
 					const isSelfCast = this.pendingAutoSkill === "invoker_alacrity"
-					const castTarget = isSelfCast ? hero : (() => {
-						const enemies = EntityManager.GetEntitiesByClass(Hero)
-						let best: Hero | undefined
-						let minDist = Infinity
-						for (const enemy of enemies) {
-							if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
-								const d = enemy.Position.Distance2D(cursorPos)
-								if (d < 800 && d < minDist) {
-									best = enemy
-									minDist = d
+					const castTarget = isSelfCast
+						? hero
+						: (() => {
+								const enemies = EntityManager.GetEntitiesByClass(Hero)
+								let best: Hero | undefined
+								let minDist = Infinity
+								for (const enemy of enemies) {
+									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
+										const d = enemy.Position.Distance2D(cursorPos)
+										if (d < 800 && d < minDist) {
+											best = enemy
+											minDist = d
+										}
+									}
 								}
-							}
-						}
-						return best
-					})()
+								return best
+						  })()
 
 					if (castTarget) {
 						ExecuteOrder.PrepareOrder({
@@ -884,23 +893,21 @@ new (class InvokerCombo {
 						})
 						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} on target`)
 					}
+				} else if (this.pendingAutoSkill === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
+					const end = cursorPos.Extend(hero.Position, 600)
+					hero.CastVectorTargetPosition(ability, cursorPos, end)
+					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} as vector at cursor`)
 				} else {
-					if (this.pendingAutoSkill === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
-						const end = cursorPos.Extend(hero.Position, 600)
-						hero.CastVectorTargetPosition(ability, cursorPos, end)
-						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} as vector at cursor`)
-					} else {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-							issuers: [hero],
-							position: cursorPos,
-							ability: ability.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} at cursor`)
-					}
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: cursorPos,
+						ability: ability.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} at cursor`)
 				}
 
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
@@ -912,23 +919,26 @@ new (class InvokerCombo {
 
 		// --- Auto Disrupt Channeling ---
 		// @ts-ignore
-		if (this.enableDisrupt && !this.comboKey.isPressed && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+		if (
+			this.enableDisrupt &&
+			!this.comboKey.isPressed &&
+			!hero.IsChanneling &&
+			!hero.IsStunned &&
+			!hero.IsSilenced &&
+			!hero.IsHexed &&
+			!this.sleeper.Sleeping
+		) {
 			if (this.disruptInvis.value || !hero.IsInvisible) {
-
 				let disruptTarget: Hero | undefined
 				let minDist = Infinity
 				for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-					if (
-						enemy.IsEnemy(hero) &&
-						enemy.IsAlive &&
-						!enemy.IsIllusion &&
-						!enemy.IsMagicImmune
-					) {
+					if (enemy.IsEnemy(hero) && enemy.IsAlive && !enemy.IsIllusion && !enemy.IsMagicImmune) {
 						const isChanneling =
 							enemy.IsChanneling ||
 							enemy.Buffs.some(b => {
 								// Don't disrupt if an ally is the one channeling
-								if (b.Name === "modifier_pudge_dismember" ||
+								if (
+									b.Name === "modifier_pudge_dismember" ||
 									b.Name.startsWith("modifier_bane_fiends_grip") ||
 									b.Name.startsWith("modifier_shadow_shaman_shackles")
 								) {
@@ -949,8 +959,12 @@ new (class InvokerCombo {
 								)
 							})
 						const isDuelingAlly = enemy.Buffs.some(b => {
-							if (!b.Name.startsWith("modifier_legion_commander_duel")) return false
-							if (!b.Caster) return true // can't verify, assume yes
+							if (!b.Name.startsWith("modifier_legion_commander_duel")) {
+								return false
+							}
+							if (!b.Caster) {
+								return true
+							} // can't verify, assume yes
 							return b.Caster.IsEnemy(hero)
 						})
 
@@ -969,7 +983,11 @@ new (class InvokerCombo {
 					const useColdSnap = this.disruptSkills.IsEnabled("invoker_cold_snap")
 					const useTornado = this.disruptSkills.IsEnabled("invoker_tornado")
 					const invokeAbility = hero.GetAbilityByName("invoker_invoke")
-					const canInvoke = invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
+					const canInvoke =
+						invokeAbility &&
+						invokeAbility.IsValid &&
+						invokeAbility.Cooldown <= 0.1 &&
+						hero.Mana >= invokeAbility.ManaCost
 					const coldSnapRange = 1000
 
 					let chosenSpell = ""
@@ -978,8 +996,13 @@ new (class InvokerCombo {
 					if (useColdSnap && minDist <= coldSnapRange) {
 						const coldSnap = hero.GetAbilityByName("invoker_cold_snap")
 						if (coldSnap && coldSnap.IsValid && coldSnap.Level > 0) {
-							const csActive = !coldSnap.IsHidden && coldSnap.Cooldown <= 0.1 && hero.Mana >= coldSnap.ManaCost
-							const csInvokable = coldSnap.IsHidden && canInvoke && coldSnap.Cooldown <= 0.1 && hero.Mana >= (coldSnap.ManaCost + invokeAbility.ManaCost)
+							const csActive =
+								!coldSnap.IsHidden && coldSnap.Cooldown <= 0.1 && hero.Mana >= coldSnap.ManaCost
+							const csInvokable =
+								coldSnap.IsHidden &&
+								canInvoke &&
+								coldSnap.Cooldown <= 0.1 &&
+								hero.Mana >= coldSnap.ManaCost + invokeAbility.ManaCost
 							if (csActive || csInvokable) {
 								chosenSpell = "invoker_cold_snap"
 							}
@@ -990,8 +1013,13 @@ new (class InvokerCombo {
 					if (chosenSpell === "" && useTornado) {
 						const tornado = hero.GetAbilityByName("invoker_tornado")
 						if (tornado && tornado.IsValid && tornado.Level > 0) {
-							const tActive = !tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
-							const tInvokable = tornado.IsHidden && canInvoke && tornado.Cooldown <= 0.1 && hero.Mana >= (tornado.ManaCost + invokeAbility.ManaCost)
+							const tActive =
+								!tornado.IsHidden && tornado.Cooldown <= 0.1 && hero.Mana >= tornado.ManaCost
+							const tInvokable =
+								tornado.IsHidden &&
+								canInvoke &&
+								tornado.Cooldown <= 0.1 &&
+								hero.Mana >= tornado.ManaCost + invokeAbility.ManaCost
 							const tornadoRange = tornado.CastRange > 0 ? tornado.CastRange : 2000
 							if ((tActive || tInvokable) && minDist <= tornadoRange) {
 								chosenSpell = "invoker_tornado"
@@ -1005,9 +1033,16 @@ new (class InvokerCombo {
 						if (ability && ability.IsValid && ability.Level > 0) {
 							const isActive = !ability.IsHidden
 							if (!isActive) {
-								if (invokeAbility && invokeAbility.IsValid && invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost) {
+								if (
+									invokeAbility &&
+									invokeAbility.IsValid &&
+									invokeAbility.Cooldown <= 0.1 &&
+									hero.Mana >= invokeAbility.ManaCost
+								) {
 									if (this.invokeSpell(hero, chosenSpell, invokeAbility)) {
-										console.log(`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`)
+										console.log(
+											`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`
+										)
 										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 										return
 									}
@@ -1057,7 +1092,11 @@ new (class InvokerCombo {
 					showEffects: true,
 					isPlayerInput: false
 				})
-				console.log(`[InvokerCombo] Auto Sunstrike: Cast pending at ${this.pendingSunstrikePos.x.toFixed(0)},${this.pendingSunstrikePos.y.toFixed(0)}`)
+				console.log(
+					`[InvokerCombo] Auto Sunstrike: Cast pending at ${this.pendingSunstrikePos.x.toFixed(
+						0
+					)},${this.pendingSunstrikePos.y.toFixed(0)}`
+				)
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ss.CastPoint * 1000 + 200)
 			}
 			this.pendingSunstrikePos = null
@@ -1066,7 +1105,15 @@ new (class InvokerCombo {
 
 		// --- Auto Sunstrike ---
 		// @ts-ignore
-		if (this.enableSunstrike && !this.comboKey.isPressed && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed && !this.sleeper.Sleeping) {
+		if (
+			this.enableSunstrike &&
+			!this.comboKey.isPressed &&
+			!hero.IsChanneling &&
+			!hero.IsStunned &&
+			!hero.IsSilenced &&
+			!hero.IsHexed &&
+			!this.sleeper.Sleeping
+		) {
 			if (!this.sunstrikeInvis.value && hero.IsInvisible) {
 				// skip invis check below
 			} else {
@@ -1075,36 +1122,50 @@ new (class InvokerCombo {
 				if (sunstrike && sunstrike.IsValid && sunstrike.Level > 0 && invokeAbility && invokeAbility.IsValid) {
 					const ssActive = !sunstrike.IsHidden && sunstrike.Cooldown <= 0.1 && hero.Mana >= sunstrike.ManaCost
 					const canInvoke = invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
-					const ssInvokable = sunstrike.IsHidden && canInvoke && sunstrike.Cooldown <= 0.1 && hero.Mana >= (sunstrike.ManaCost + invokeAbility.ManaCost)
+					const ssInvokable =
+						sunstrike.IsHidden &&
+						canInvoke &&
+						sunstrike.Cooldown <= 0.1 &&
+						hero.Mana >= sunstrike.ManaCost + invokeAbility.ManaCost
 
 					if (ssActive || ssInvokable) {
 						// --- Sunstrike on Stunned/Channeled ---
 						if (this.sunstrikeOnStun.value) {
 							for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-								if (!enemy.IsEnemy(hero) || !enemy.IsAlive || !enemy.IsVisible || enemy.IsIllusion || enemy.IsMagicImmune) {
+								if (
+									!enemy.IsEnemy(hero) ||
+									!enemy.IsAlive ||
+									!enemy.IsVisible ||
+									enemy.IsIllusion ||
+									enemy.IsMagicImmune
+								) {
 									continue
 								}
 								const isStunned = enemy.IsStunned
 								const isTeleporting = enemy.Buffs.some(b => b.Name === "modifier_teleporting")
 								const isRooted = enemy.IsRooted
 								const isBashed = enemy.Buffs.some(b => b.Name.startsWith("modifier_bashed"))
-								const isCycloned = enemy.Buffs.some(b =>
-									b.Name === "modifier_euler_cyclone" ||
-									b.Name === "modifier_wind_waker_active" ||
-									b.Name === "modifier_invoker_tornado"
+								const isCycloned = enemy.Buffs.some(
+									b =>
+										b.Name === "modifier_euler_cyclone" ||
+										b.Name === "modifier_wind_waker_active" ||
+										b.Name === "modifier_invoker_tornado"
 								)
 								const isChanneling =
 									enemy.IsChanneling ||
-									enemy.Buffs.some(b =>
-										b.Name === "modifier_teleporting" ||
-										b.Name.startsWith("modifier_enigma_black_hole") ||
-										b.Name.startsWith("modifier_pudge_dismember") ||
-										b.Name.startsWith("modifier_bane_fiends_grip") ||
-										b.Name.startsWith("modifier_shadow_shaman_shackles") ||
-										b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
-										b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
+									enemy.Buffs.some(
+										b =>
+											b.Name === "modifier_teleporting" ||
+											b.Name.startsWith("modifier_enigma_black_hole") ||
+											b.Name.startsWith("modifier_pudge_dismember") ||
+											b.Name.startsWith("modifier_bane_fiends_grip") ||
+											b.Name.startsWith("modifier_shadow_shaman_shackles") ||
+											b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+											b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
 									)
-								const isDueled = enemy.Buffs.some(b => b.Name.startsWith("modifier_legion_commander_duel"))
+								const isDueled = enemy.Buffs.some(b =>
+									b.Name.startsWith("modifier_legion_commander_duel")
+								)
 
 								if (!isStunned && !isChanneling && !isDueled && !isRooted && !isBashed) {
 									// Check cycloned separately (timed)
@@ -1120,23 +1181,29 @@ new (class InvokerCombo {
 								}
 
 								// If only generic IsChanneling (no specific modifier), skip — unreliable cast-point detection
-								if (isChanneling && !isTeleporting && !enemy.Buffs.some(b =>
-									b.Name.startsWith("modifier_enigma_black_hole") ||
-									b.Name.startsWith("modifier_pudge_dismember") ||
-									b.Name.startsWith("modifier_bane_fiends_grip") ||
-									b.Name.startsWith("modifier_shadow_shaman_shackles") ||
-									b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
-									b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
-								)) {
+								if (
+									isChanneling &&
+									!isTeleporting &&
+									!enemy.Buffs.some(
+										b =>
+											b.Name.startsWith("modifier_enigma_black_hole") ||
+											b.Name.startsWith("modifier_pudge_dismember") ||
+											b.Name.startsWith("modifier_bane_fiends_grip") ||
+											b.Name.startsWith("modifier_shadow_shaman_shackles") ||
+											b.Name.startsWith("modifier_crystal_maiden_freezing_field") ||
+											b.Name.startsWith("modifier_witch_doctor_voodoo_swtich")
+									)
+								) {
 									continue
 								}
 
 								// For cycloned enemies, time the sunstrike to hit when they land
 								if (isCycloned) {
-									const cycloneBuff = enemy.Buffs.find(b =>
-										b.Name === "modifier_euler_cyclone" ||
-										b.Name === "modifier_wind_waker_active" ||
-										b.Name === "modifier_invoker_tornado"
+									const cycloneBuff = enemy.Buffs.find(
+										b =>
+											b.Name === "modifier_euler_cyclone" ||
+											b.Name === "modifier_wind_waker_active" ||
+											b.Name === "modifier_invoker_tornado"
 									)
 									if (cycloneBuff) {
 										const rem = cycloneBuff.RemainingTime
@@ -1165,7 +1232,9 @@ new (class InvokerCombo {
 										showEffects: true,
 										isPlayerInput: false
 									})
-									console.log(`[InvokerCombo] Auto Sunstrike: Cast on stunned/channeled ${enemy.Name}`)
+									console.log(
+										`[InvokerCombo] Auto Sunstrike: Cast on stunned/channeled ${enemy.Name}`
+									)
 									this.sleeper.Sleep(GameState.InputLag * 1000 + sunstrike.CastPoint * 1000 + 200)
 									this.pendingSunstrikePos = null
 									return
@@ -1184,7 +1253,13 @@ new (class InvokerCombo {
 						// --- Sunstrike Walking Prediction ---
 						if (this.sunstrikeOnWalk.value && (ssActive || ssInvokable)) {
 							for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-								if (!enemy.IsEnemy(hero) || !enemy.IsAlive || !enemy.IsVisible || enemy.IsIllusion || enemy.IsMagicImmune) {
+								if (
+									!enemy.IsEnemy(hero) ||
+									!enemy.IsAlive ||
+									!enemy.IsVisible ||
+									enemy.IsIllusion ||
+									enemy.IsMagicImmune
+								) {
 									continue
 								}
 								const hpPct = (enemy.HP / enemy.MaxHP) * 100
@@ -1215,7 +1290,11 @@ new (class InvokerCombo {
 										showEffects: true,
 										isPlayerInput: false
 									})
-									console.log(`[InvokerCombo] Auto Sunstrike: Predicted walking ${enemy.Name} at ${hpPct.toFixed(0)}% HP`)
+									console.log(
+										`[InvokerCombo] Auto Sunstrike: Predicted walking ${
+											enemy.Name
+										} at ${hpPct.toFixed(0)}% HP`
+									)
 									this.sleeper.Sleep(GameState.InputLag * 1000 + sunstrike.CastPoint * 1000 + 200)
 									this.pendingSunstrikePos = null
 									return
@@ -1290,7 +1369,12 @@ new (class InvokerCombo {
 
 		if (!isTargetImmune) {
 			const blink = hero.Items.find(i => i.Name.startsWith("item_blink"))
-			if (blink && this.itemsSelector.IsEnabled("item_blink") && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost) {
+			if (
+				blink &&
+				this.itemsSelector.IsEnabled("item_blink") &&
+				blink.Cooldown <= 0.1 &&
+				hero.Mana >= blink.ManaCost
+			) {
 				const blinkRange = 1200
 				const currentDist = hero.Distance2D(bestTarget)
 				if (currentDist > 600 && currentDist <= blinkRange + 200) {
@@ -1319,31 +1403,39 @@ new (class InvokerCombo {
 				return
 			}
 
-			if (this.useTargetItem(hero, "item_orchid", bestTarget) || this.useTargetItem(hero, "item_bloodthorn", bestTarget)) {
+			if (
+				this.useTargetItem(hero, "item_orchid", bestTarget) ||
+				this.useTargetItem(hero, "item_bloodthorn", bestTarget)
+			) {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 				return
 			}
 
 			const tornadoAbility = hero.GetAbilityByName("invoker_tornado")
 			const isTornadoReady = tornadoAbility && tornadoAbility.Level > 0 && tornadoAbility.Cooldown <= 0.1
-			const hasActiveLiftBuff = bestTarget.Buffs.some(m =>
-				m.Name === "modifier_invoker_tornado" ||
-				m.Name === "modifier_euler_cyclone" ||
-				m.Name === "modifier_wind_waker_active"
+			const hasActiveLiftBuff = bestTarget.Buffs.some(
+				m =>
+					m.Name === "modifier_invoker_tornado" ||
+					m.Name === "modifier_euler_cyclone" ||
+					m.Name === "modifier_wind_waker_active"
 			)
 
 			if (!hasActiveLiftBuff && (!isTornadoReady || !this.comboSequenceGrid.IsEnabled("invoker_tornado"))) {
-				if (this.useTargetItem(hero, "item_cyclone", bestTarget) || this.useTargetItem(hero, "item_wind_waker", bestTarget)) {
+				if (
+					this.useTargetItem(hero, "item_cyclone", bestTarget) ||
+					this.useTargetItem(hero, "item_wind_waker", bestTarget)
+				) {
 					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 					return
 				}
 			}
 		}
 
-		const liftBuff = bestTarget.Buffs.find(m =>
-			m.Name === "modifier_invoker_tornado" ||
-			m.Name === "modifier_euler_cyclone" ||
-			m.Name === "modifier_wind_waker_active"
+		const liftBuff = bestTarget.Buffs.find(
+			m =>
+				m.Name === "modifier_invoker_tornado" ||
+				m.Name === "modifier_euler_cyclone" ||
+				m.Name === "modifier_wind_waker_active"
 		)
 
 		const invokeAbility = hero.GetAbilityByName("invoker_invoke")
@@ -1384,13 +1476,31 @@ new (class InvokerCombo {
 			const active = !ability.IsHidden
 
 			if (!active) {
-				if (!invokeAbility || !invokeAbility.IsValid || invokeAbility.Cooldown > 0.1 || hero.Mana < invokeAbility.ManaCost) {
+				if (
+					!invokeAbility ||
+					!invokeAbility.IsValid ||
+					invokeAbility.Cooldown > 0.1 ||
+					hero.Mana < invokeAbility.ManaCost
+				) {
 					let foundLaterSpell = false
-					for (let i = this.comboSequenceGrid.values.indexOf(spellName) + 1; i < this.comboSequenceGrid.values.length; i++) {
+					for (
+						let i = this.comboSequenceGrid.values.indexOf(spellName) + 1;
+						i < this.comboSequenceGrid.values.length;
+						i++
+					) {
 						const laterName = this.comboSequenceGrid.values[i]
-						if (!this.comboSequenceGrid.IsEnabled(laterName)) continue
+						if (!this.comboSequenceGrid.IsEnabled(laterName)) {
+							continue
+						}
 						const laterAbil = hero.GetAbilityByName(laterName)
-						if (laterAbil && laterAbil.IsValid && laterAbil.Level > 0 && !laterAbil.IsHidden && laterAbil.Cooldown <= 0.1 && hero.Mana >= laterAbil.ManaCost) {
+						if (
+							laterAbil &&
+							laterAbil.IsValid &&
+							laterAbil.Level > 0 &&
+							!laterAbil.IsHidden &&
+							laterAbil.Cooldown <= 0.1 &&
+							hero.Mana >= laterAbil.ManaCost
+						) {
 							if (this.castInvokerSpell(hero, laterAbil, bestTarget, liftBuff)) {
 								return
 							}
