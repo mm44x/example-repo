@@ -102,6 +102,20 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 		piercesBkb: false,
 		castType: "target",
 		castRange: 700
+	},
+	{
+		name: "pudge_dismember",
+		label: "Dismember (Pudge)",
+		piercesBkb: true,
+		castType: "target",
+		castRange: 160
+	},
+	{
+		name: "sniper_concussive_grenade",
+		label: "Concussive Grenade (Sniper)",
+		piercesBkb: false,
+		castType: "position",
+		castRange: 900
 	}
 ]
 

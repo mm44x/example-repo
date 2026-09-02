@@ -34,7 +34,7 @@ export function executeOrbwalk(
 		return false
 	}
 
-	if (!target || !target.IsValid || !target.IsAlive) {
+	if (!target || !target.IsValid || !target.IsAlive || target.IsInvulnerable) {
 		return false
 	}
 
@@ -71,6 +71,21 @@ function smartOrbwalk(hero: Hero, target: Hero, sleeper: TickSleeper, config: Or
 			return true
 		}
 
+		const backswingMovePos = calcOrbwalkPosition(hero, target, config.safeDistancePct)
+		ExecuteOrder.PrepareOrder({
+			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
+			issuers: [hero],
+			position: backswingMovePos,
+			queue: false,
+			showEffects: false,
+			isPlayerInput: false
+		})
+		sleeper.Sleep(SLEEP_AFTER_MOVE)
+		return true
+	}
+
+	// If hero is disarmed or target is attack immune (Ghost/Ethereal), reposition without spamming attack orders
+	if (hero.IsDisarmed || target.IsAttackImmune) {
 		const movePos = calcOrbwalkPosition(hero, target, config.safeDistancePct)
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
@@ -89,25 +104,27 @@ function smartOrbwalk(hero: Hero, target: Hero, sleeper: TickSleeper, config: Or
 	const secondsPerAttack = hero.SecondsPerAttack
 
 	if (timeSinceLastAttack >= secondsPerAttack - ATTACK_TOLERANCE) {
-		// Attack is ready
-		ExecuteOrder.PrepareOrder({
-			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
-			issuers: [hero],
-			target: target.Index,
-			queue: false,
-			showEffects: false,
-			isPlayerInput: false
-		})
-		sleeper.Sleep(SLEEP_AFTER_ATTACK)
-		return true
+		if (hero.CanAttack(target, true, true)) {
+			// Attack is ready
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
+				issuers: [hero],
+				target: target.Index,
+				queue: false,
+				showEffects: false,
+				isPlayerInput: false
+			})
+			sleeper.Sleep(SLEEP_AFTER_ATTACK)
+			return true
+		}
 	}
 
-	// Attack on cooldown — move to maintain orbital distance
-	const movePos = calcOrbwalkPosition(hero, target, config.safeDistancePct)
+	// Attack on cooldown — move to chase/maintain distance
+	const cooldownMovePos = calcOrbwalkPosition(hero, target, config.safeDistancePct)
 	ExecuteOrder.PrepareOrder({
 		orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
 		issuers: [hero],
-		position: movePos,
+		position: cooldownMovePos,
 		queue: false,
 		showEffects: false,
 		isPlayerInput: false
@@ -116,7 +133,16 @@ function smartOrbwalk(hero: Hero, target: Hero, sleeper: TickSleeper, config: Or
 	return true
 }
 
-function calcOrbwalkPosition(hero: Hero, target: Hero, safeDistancePct: number) {
+function calcOrbwalkPosition(hero: Hero, target: Hero, safeDistancePct: number): Vector3 {
+	// For melee heroes (like Pudge): Always chase forward / bodyblock in front of moving target
+	if (hero.IsMelee) {
+		if (target.IsMoving) {
+			return target.GetPredictionPosition(0.25)
+		}
+		return target.Position.Clone()
+	}
+
+	// For ranged heroes: Maintain safe kite distance
 	const dir = target.Position.Subtract(hero.Position)
 	const dist = dir.Length2D
 	const safeDist = hero.GetAttackRange(target) * (safeDistancePct / 100)
@@ -140,6 +166,10 @@ function calcOrbwalkPosition(hero: Hero, target: Hero, safeDistancePct: number) 
 }
 
 function simpleAttack(hero: Hero, target: Hero, sleeper: TickSleeper): boolean {
+	if (hero.IsDisarmed || target.IsAttackImmune) {
+		return false
+	}
+
 	// If target is beyond attack range, move closer first
 	if (hero.Distance2D(target) > hero.GetAttackRange(target)) {
 		ExecuteOrder.PrepareOrder({
