@@ -11,9 +11,12 @@ import {
 	GameState,
 	Hero,
 	InputManager,
+	Item,
 	LocalPlayer,
 	Menu,
 	Outpost,
+	ParticleAttachment,
+	ParticlesSDK,
 	Rectangle,
 	RendererSDK,
 	TickSleeper,
@@ -23,6 +26,7 @@ import {
 	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
 
+import { claimOrder } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
 
 const COMBO_SPELLS = [
@@ -45,26 +49,35 @@ new (class TinkerCombo {
 
 	private readonly comboEnabled = this.entry.AddToggle("Enable Combo", true)
 	private readonly comboKey = this.entry.AddKeybind("Combo Key", "F", "Hold to execute Tinker combo")
+	private readonly lockTargetEnabled = this.entry.AddToggle("Lock Target", true, "Lock on target during combo")
 	private readonly comboRadius = this.entry.AddSlider("Target Search Radius", 800, 300, 1500)
 
 	private readonly itemsSelector = this.entry.AddImageSelector(
 		"Use Items",
 		[
 			"item_blink",
+			"item_soul_ring",
 			"item_sheepstick",
 			"item_ethereal_blade",
 			"item_dagon",
 			"item_shivas_guard",
+			"item_orchid",
+			"item_bloodthorn",
+			"item_nullifier",
 			"item_black_king_bar",
 			"item_glimmer_cape",
 			"item_bottle"
 		],
 		new Map([
 			["item_blink", true],
+			["item_soul_ring", true],
 			["item_sheepstick", true],
 			["item_ethereal_blade", true],
 			["item_dagon", true],
 			["item_shivas_guard", true],
+			["item_orchid", true],
+			["item_bloodthorn", true],
+			["item_nullifier", true],
 			["item_black_king_bar", true],
 			["item_glimmer_cape", true],
 			["item_bottle", true]
@@ -137,6 +150,9 @@ new (class TinkerCombo {
 	private isDraggingStatus = false
 	private isDraggingDebug = false
 
+	private readonly pSDK = new ParticlesSDK()
+	private lockedTarget: Hero | undefined
+
 	private readonly sleeper = new TickSleeper()
 	private readonly rearmModifierSleeper = new TickSleeper()
 	private pendingBottleAfterRearm = false
@@ -168,6 +184,8 @@ new (class TinkerCombo {
 		this.rearmModifierSleeper.Sleep(0)
 		this.bottleFountainSleeper.Sleep(0)
 		this.comboSequenceGrid = null
+		this.lockedTarget = undefined
+		this.pSDK.DestroyByKey("tinker_target_ring")
 		debugSpellInfo.length = 0
 		spellInfoFrameCount = 0
 	}
@@ -175,6 +193,7 @@ new (class TinkerCombo {
 	// --- Cast helpers ---
 
 	private castNoTarget(issuer: Hero, ability: Ability): void {
+		claimOrder()
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
 			issuers: [issuer],
@@ -186,6 +205,7 @@ new (class TinkerCombo {
 	}
 
 	private castTarget(issuer: Hero, ability: Ability, target: Hero): void {
+		claimOrder()
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 			issuers: [issuer],
@@ -198,6 +218,7 @@ new (class TinkerCombo {
 	}
 
 	private castPosition(issuer: Hero, ability: Ability, pos: Vector3): void {
+		claimOrder()
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 			issuers: [issuer],
@@ -211,6 +232,46 @@ new (class TinkerCombo {
 
 	private sleepAfterCast(ability: Ability): void {
 		this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+	}
+
+	private getBlinkItem(hero: Hero): Item | undefined {
+		for (const item of hero.Items) {
+			if (
+				item &&
+				item.IsValid &&
+				(item.Name === "item_blink" ||
+					item.Name === "item_arcane_blink" ||
+					item.Name === "item_overwhelming_blink" ||
+					item.Name === "item_swift_blink")
+			) {
+				return item
+			}
+		}
+		return undefined
+	}
+
+	private trySoulRing(hero: Hero): boolean {
+		if (!this.itemsSelector.IsEnabled("item_soul_ring")) {
+			return false
+		}
+		const hpPct = (hero.HP / hero.MaxHP) * 100
+		if (hpPct <= 25) {
+			return false
+		}
+		const soulRing = hero.Items.find(i => i.Name === "item_soul_ring")
+		if (!soulRing || !soulRing.IsValid || !soulRing.CanBeUsable || hero.IsMuted || soulRing.Cooldown > 0.1) {
+			return false
+		}
+		claimOrder()
+		ExecuteOrder.PrepareOrder({
+			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+			issuers: [hero],
+			ability: soulRing.Index,
+			queue: false,
+			showEffects: true,
+			isPlayerInput: false
+		})
+		return true
 	}
 
 	// --- Item casting ---
@@ -370,7 +431,7 @@ new (class TinkerCombo {
 		if (!this.itemsSelector.IsEnabled("item_blink") || this.blinkSleeper.Sleeping) {
 			return false
 		}
-		const blink = hero.Items.find(i => i.Name === "item_blink")
+		const blink = this.getBlinkItem(hero)
 		if (
 			!blink ||
 			!blink.IsValid ||
@@ -386,6 +447,7 @@ new (class TinkerCombo {
 		const blinkRange = blink.CastRange > 0 ? blink.CastRange : 1200
 		const clamped = Math.min(dist, blinkRange)
 		const blinkPos = dist > 0.1 ? hero.Position.Add(dir.Normalize().MultiplyScalar(clamped)) : position.Clone()
+		claimOrder()
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 			issuers: [hero],
@@ -420,7 +482,11 @@ new (class TinkerCombo {
 			this.itemsSelector.IsEnabled("item_ethereal_blade") &&
 				hero.Items.find(i => i.Name === "item_ethereal_blade"),
 			this.itemsSelector.IsEnabled("item_dagon") && this.getDagonItem(hero),
-			this.itemsSelector.IsEnabled("item_shivas_guard") && hero.Items.find(i => i.Name === "item_shivas_guard")
+			this.itemsSelector.IsEnabled("item_shivas_guard") && hero.Items.find(i => i.Name === "item_shivas_guard"),
+			this.itemsSelector.IsEnabled("item_soul_ring") && hero.Items.find(i => i.Name === "item_soul_ring"),
+			(this.itemsSelector.IsEnabled("item_orchid") || this.itemsSelector.IsEnabled("item_bloodthorn")) &&
+				(hero.Items.find(i => i.Name === "item_bloodthorn") || hero.Items.find(i => i.Name === "item_orchid")),
+			this.itemsSelector.IsEnabled("item_nullifier") && hero.Items.find(i => i.Name === "item_nullifier")
 		].some(item => item && item.IsValid && item.Cooldown > 1)
 
 		return spellOnCd || itemOnCd
@@ -508,26 +574,29 @@ new (class TinkerCombo {
 			return false
 		}
 
-		if (this.spamMarchRearm.value) {
-			const march = hero.GetAbilityByName("tinker_march_of_the_machines")
-			if (march && march.IsValid && march.Level > 0 && march.Cooldown > 0.5) {
-				const rearm = hero.GetAbilityByName("tinker_rearm")
-				if (
-					rearm &&
-					rearm.IsValid &&
-					rearm.Level > 0 &&
-					rearm.Cooldown <= 0.1 &&
-					hero.Mana >= rearm.ManaCost + march.ManaCost
-				) {
-					this.castNoTarget(hero, rearm)
-					const channelDur = this.getRearmChannelDuration(hero)
-					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
-					this.spamMarchSleeper.Sleep(totalWait)
-					this.sleeper.Sleep(totalWait)
-					this.pendingBottleAfterRearm = true
-					this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
-					return true
-				}
+		const march = hero.GetAbilityByName("tinker_march_of_the_machines")
+		if (!march || !march.IsValid || march.Level <= 0) {
+			return false
+		}
+
+		if (this.spamMarchRearm.value && march.Cooldown > 0.5) {
+			const rearm = hero.GetAbilityByName("tinker_rearm")
+			if (
+				rearm &&
+				rearm.IsValid &&
+				rearm.Level > 0 &&
+				rearm.Cooldown <= 0.1 &&
+				hero.Mana >= rearm.ManaCost + march.ManaCost
+			) {
+				this.trySoulRing(hero)
+				this.castNoTarget(hero, rearm)
+				const channelDur = this.getRearmChannelDuration(hero)
+				const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
+				this.spamMarchSleeper.Sleep(totalWait)
+				this.sleeper.Sleep(totalWait)
+				this.pendingBottleAfterRearm = true
+				this.rearmModifierSleeper.Sleep(GameState.InputLag * 1000 + 200)
+				return true
 			}
 		}
 
@@ -536,8 +605,7 @@ new (class TinkerCombo {
 			return true
 		}
 
-		const march = hero.GetAbilityByName("tinker_march_of_the_machines")
-		if (!march || !march.IsValid || march.Level <= 0 || march.Cooldown > 0.1 || hero.Mana < march.ManaCost) {
+		if (march.Cooldown > 0.1 || hero.Mana < march.ManaCost) {
 			return false
 		}
 
@@ -715,6 +783,7 @@ new (class TinkerCombo {
 			if (needRearm) {
 				const rearm = hero.GetAbilityByName("tinker_rearm")
 				if (rearm && rearm.IsValid && rearm.Level > 0 && rearm.Cooldown <= 0.1 && hero.Mana >= rearm.ManaCost) {
+					this.trySoulRing(hero)
 					this.castNoTarget(hero, rearm)
 					const channelDur = this.getRearmChannelDuration(hero)
 					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
@@ -884,12 +953,7 @@ new (class TinkerCombo {
 					return true
 				} // masih channel
 				// Channel selesai — cek apakah sudah di jungle (tidak di fountain)
-				if (!this.isInOwnFountain(hero)) {
-					this.farmLoopState = "farming"
-				} else {
-					// Kemungkinan gagal/ke fountain — kembali idle
-					this.farmLoopState = "idle"
-				}
+				this.farmLoopState = this.isInOwnFountain(hero) ? "idle" : "farming"
 				return true
 			}
 			case "farming": {
@@ -967,6 +1031,7 @@ new (class TinkerCombo {
 						rearm.Cooldown <= 0.1 &&
 						hero.Mana >= rearm.ManaCost
 					) {
+						this.trySoulRing(hero)
 						this.castNoTarget(hero, rearm)
 						const channelDur = this.getRearmChannelDuration(hero)
 						const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150
@@ -1149,6 +1214,8 @@ new (class TinkerCombo {
 
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
+			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("tinker_target_ring")
 			return
 		}
 
@@ -1156,18 +1223,40 @@ new (class TinkerCombo {
 			return
 		}
 
-		const bestTarget = this.findBestTarget(hero)
+		let bestTarget: Hero | undefined = this.lockedTarget
+		if (
+			!bestTarget ||
+			!bestTarget.IsValid ||
+			!bestTarget.IsAlive ||
+			!bestTarget.IsVisible ||
+			bestTarget.IsIllusion
+		) {
+			const foundTarget = this.findBestTarget(hero)
+			if (this.lockTargetEnabled.value && foundTarget) {
+				this.lockedTarget = foundTarget
+			}
+			bestTarget = foundTarget
+		}
+
 		if (!bestTarget) {
+			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("tinker_target_ring")
 			return
 		}
+
+		this.pSDK.DrawCircle("tinker_target_ring", bestTarget, 140, {
+			Color: new Color(80, 200, 255, 220),
+			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+		})
 
 		const distToTarget = hero.Distance2D(bestTarget)
 		if (hero.IsChanneling || this.sleeper.Sleeping) {
 			return
 		}
 
-		if (distToTarget > 800) {
-			if (this.doBlink(hero, bestTarget.Position)) {
+		if (distToTarget > 750) {
+			const safeBlinkPos = bestTarget.Position.Extend(hero.Position, 550)
+			if (this.doBlink(hero, safeBlinkPos)) {
 				return
 			}
 		}
@@ -1214,6 +1303,25 @@ new (class TinkerCombo {
 				const hex = this.tryCastItem(hero, "item_sheepstick", bestTarget)
 				if (hex) {
 					this.sleeper.Sleep(GameState.InputLag * 1000 + hex.CastPoint * 1000 + 100)
+					return
+				}
+			}
+			if (
+				(this.itemsSelector.IsEnabled("item_orchid") || this.itemsSelector.IsEnabled("item_bloodthorn")) &&
+				distToTarget <= 850
+			) {
+				const silence =
+					this.tryCastItem(hero, "item_bloodthorn", bestTarget) ||
+					this.tryCastItem(hero, "item_orchid", bestTarget)
+				if (silence) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + silence.CastPoint * 1000 + 100)
+					return
+				}
+			}
+			if (this.itemsSelector.IsEnabled("item_nullifier") && distToTarget <= 850) {
+				const nullifier = this.tryCastItem(hero, "item_nullifier", bestTarget)
+				if (nullifier) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + nullifier.CastPoint * 1000 + 100)
 					return
 				}
 			}
@@ -1278,7 +1386,8 @@ new (class TinkerCombo {
 					if (isImmune) {
 						continue
 					}
-					if (distToTarget > 650) {
+					const castRange = ability.CastRange > 0 ? ability.CastRange : 650
+					if (distToTarget > castRange) {
 						continue
 					}
 					this.castTarget(hero, ability, bestTarget)
@@ -1286,11 +1395,19 @@ new (class TinkerCombo {
 					return
 				}
 				case "tinker_march_of_the_machines": {
+					const castRange = ability.CastRange > 0 ? ability.CastRange : 900
+					if (distToTarget > castRange + 300) {
+						continue
+					}
 					this.castPosition(hero, ability, this.groundCastPos(hero, ability, bestTarget.Position))
 					this.sleepAfterCast(ability)
 					return
 				}
 				case "tinker_deploy_turrets": {
+					const castRange = ability.CastRange > 0 ? ability.CastRange : 900
+					if (distToTarget > castRange + 300) {
+						continue
+					}
 					this.castPosition(hero, ability, this.groundCastPos(hero, ability, bestTarget.Position))
 					this.sleepAfterCast(ability)
 					return
@@ -1302,7 +1419,8 @@ new (class TinkerCombo {
 					if (isImmune) {
 						continue
 					}
-					if (distToTarget > 650) {
+					const castRange = ability.CastRange > 0 ? ability.CastRange : 700
+					if (distToTarget > castRange) {
 						continue
 					}
 					this.castTarget(hero, ability, bestTarget)
@@ -1313,6 +1431,7 @@ new (class TinkerCombo {
 					if (!this.shouldRearm(hero)) {
 						continue
 					}
+					this.trySoulRing(hero)
 					this.castNoTarget(hero, ability)
 					const channelDur = this.getRearmChannelDuration(hero)
 					const totalWait = GameState.InputLag * 1000 + channelDur * 1000 + 150

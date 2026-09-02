@@ -87,6 +87,19 @@ new (class PudgeCombo {
 		true,
 		"Auto hook enemies channeling continuous abilities or Teleport if path is clear"
 	)
+	private readonly autoCancelHook = this.enemyHookNode.AddToggle(
+		"Auto Cancel Hook (S-Stop)",
+		true,
+		"Automatically cancel (Stop) Hook during cast windup (0.3s) if target turns, stops, or an obstacle blocks the path"
+	)
+	private readonly cancelTolerance = this.enemyHookNode.AddSlider(
+		"Cancel Position Tolerance",
+		90,
+		40,
+		180,
+		5,
+		"Max deviation in units before canceling Hook windup (Hook radius is 100)"
+	)
 	private readonly autoHookDrawTarget = this.enemyHookNode.AddToggle(
 		"Draw Hook Predicted Indicator",
 		true,
@@ -133,6 +146,11 @@ new (class PudgeCombo {
 		"Strict Channel Protection",
 		true,
 		"Prevent any orders or movement while Pudge is actively channeling Dismember"
+	)
+	private readonly blockInputsDuringDismember = this.dismemberNode.AddToggle(
+		"Block Inputs During Dismember",
+		true,
+		"Block all move, attack, item, and spell commands during Dismember channel except S (Stop)"
 	)
 
 	// Items Integration
@@ -223,7 +241,12 @@ new (class PudgeCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.OnDraw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("PrepareUnitOrders", this.onPrepareUnitOrders.bind(this))
 	}
+
+	private castingHookTarget: Hero | undefined
+	private castingHookPos: Vector3 | undefined
+	private castingHookStartTime = 0
 
 	private onGameEnded(): void {
 		this.sleeper.Sleep(0)
@@ -234,6 +257,9 @@ new (class PudgeCombo {
 		this.pendingAtosTarget = undefined
 		this.pendingAtosTime = 0
 		this.hookInFlightUntil = 0
+		this.castingHookTarget = undefined
+		this.castingHookPos = undefined
+		this.castingHookStartTime = 0
 		this.pSDK.DestroyAll()
 
 		if (this.comboSequenceGrid) {
@@ -526,6 +552,139 @@ new (class PudgeCombo {
 	}
 
 	/**
+	 * Auto Cancel Hook Controller:
+	 * During Pudge's 0.3s Meat Hook cast windup (hook.IsInAbilityPhase), continuously monitors:
+	 * 1. Target invalidation: died, invisible, invulnerable, or magic immune
+	 * 2. Trajectory deviation: target changed direction (juked), stopped, or dashed away
+	 * 3. Obstacle collision: a creep, hero, or summon walked into the hook corridor
+	 *
+	 * If any condition fails, immediately issues an instant S-Stop order with ZERO mana & cooldown cost!
+	 */
+	private handleAutoCancelHook(hero: Hero, hook: Ability): boolean {
+		if (!this.autoCancelHook.value || !this.castingHookTarget || !this.castingHookPos) {
+			return false
+		}
+
+		// Check if Hook is currently in its cast phase (0.3s windup before projectile release)
+		if (!hook.IsInAbilityPhase) {
+			// Cast phase finished or was already completed
+			if (GameState.RawGameTime - this.castingHookStartTime > (hook.CastPoint > 0 ? hook.CastPoint : 0.3)) {
+				this.castingHookTarget = undefined
+				this.castingHookPos = undefined
+			}
+			return false
+		}
+
+		const target = this.castingHookTarget
+
+		// 1. Target invalidation check
+		const isAlly = !target.IsEnemy(hero)
+		if (
+			!target.IsValid ||
+			!target.IsAlive ||
+			!target.IsVisible ||
+			target.IsInvulnerable ||
+			(!isAlly && (target.IsMagicImmune || target.IsDebuffImmune))
+		) {
+			this.cancelHookCast(hero)
+			return true
+		}
+
+		// 2. Trajectory deviation check
+		const newPredPos = this.calculateHookLead(hero, target, hook)
+		const deviation = newPredPos.Distance2D(this.castingHookPos)
+		const maxTolerance = this.cancelTolerance.value
+
+		if (deviation > maxTolerance) {
+			this.cancelHookCast(hero)
+			return true
+		}
+
+		// 3. Obstacle collision check (creep or hero walked into the path)
+		if (!this.isHookPathClear(hero, target, this.castingHookPos)) {
+			this.cancelHookCast(hero)
+			return true
+		}
+
+		return false
+	}
+
+	private cancelHookCast(hero: Hero): void {
+		claimOrder()
+		ExecuteOrder.PrepareOrder({
+			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_STOP,
+			issuers: [hero],
+			queue: false,
+			showEffects: true,
+			isPlayerInput: false
+		})
+		this.castingHookTarget = undefined
+		this.castingHookPos = undefined
+		this.castingHookStartTime = 0
+		this.hookInFlightUntil = 0
+		this.sleeper.Sleep(60)
+		this.autoHookSleeper.Sleep(60)
+	}
+
+	/**
+	 * Intercepts and filters unit orders:
+	 * When Pudge is channeling Dismember, blocks all accidental input commands (Move, Attack, Cast Spell, Items)
+	 * EXCEPT "S" (DOTA_UNIT_ORDER_STOP) or "H" (DOTA_UNIT_ORDER_HOLD_POSITION) to stop, and Rot toggle.
+	 */
+	private onPrepareUnitOrders(order: ExecuteOrder): false | void {
+		if (!this.blockInputsDuringDismember.value) {
+			return
+		}
+
+		if (!this.hasLocalHero) {
+			return
+		}
+
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			return
+		}
+
+		// Check if Pudge is currently channeling Dismember
+		const dismember = hero.GetAbilityByName("pudge_dismember")
+		const isDismembering =
+			(dismember && dismember.IsValid && dismember.IsChanneling) ||
+			(hero.IsChanneling && this.protectDismemberChannel.value)
+
+		if (!isDismembering) {
+			return
+		}
+
+		// Check if Pudge is the issuer of this order
+		const isPudgeIssuer =
+			order.Issuers.length === 0 || order.Issuers.some(u => u === hero || u.Index === hero.Index)
+
+		if (!isPudgeIssuer) {
+			return
+		}
+
+		// Allow STOP ("S" key) and HOLD ("H" key) to cancel Dismember channel
+		if (
+			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_STOP ||
+			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_HOLD_POSITION
+		) {
+			return
+		}
+
+		// Allow Rot toggle (0 cast point instant toggle that does not break channeling)
+		if (
+			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE ||
+			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT ||
+			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_AUTO
+		) {
+			return
+		}
+
+		// Block all other orders (Move clicks, Attack clicks, Spell casts, Item usages, Blink, etc.)
+		return false
+	}
+
+	/**
 	 * Background Auto Hook for Stunned / Rooted / Channeling enemies & disabled allies.
 	 */
 	private handleAutoHookBackground(hero: Hero): boolean {
@@ -577,6 +736,9 @@ new (class PudgeCombo {
 					const targetPos = ally.Position.Clone()
 					if (this.isHookPathClear(hero, ally, targetPos)) {
 						this.hookInFlightUntil = GameState.RawGameTime + dist / hookSpeed + 0.6
+						this.castingHookTarget = ally
+						this.castingHookPos = targetPos
+						this.castingHookStartTime = GameState.RawGameTime
 						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
@@ -616,6 +778,9 @@ new (class PudgeCombo {
 					const targetPos = enemy.Position.Clone()
 					if (this.isHookPathClear(hero, enemy, targetPos)) {
 						this.hookInFlightUntil = GameState.RawGameTime + dist / hookSpeed + 0.6
+						this.castingHookTarget = enemy
+						this.castingHookPos = targetPos
+						this.castingHookStartTime = GameState.RawGameTime
 						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
@@ -637,6 +802,9 @@ new (class PudgeCombo {
 				const targetPos = enemy.Position.Clone()
 				if (this.isHookPathClear(hero, enemy, targetPos)) {
 					this.hookInFlightUntil = GameState.RawGameTime + dist / hookSpeed + 0.6
+					this.castingHookTarget = enemy
+					this.castingHookPos = targetPos
+					this.castingHookStartTime = GameState.RawGameTime
 					claimOrder()
 					ExecuteOrder.PrepareOrder({
 						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
@@ -1050,6 +1218,14 @@ new (class PudgeCombo {
 			}
 		}
 
+		// 0. Auto Cancel Hook (S-Stop) during 0.3s Cast Windup if target turns, stops, or an obstacle intervenes
+		const hookAbil = hero.GetAbilityByName("pudge_meat_hook")
+		if (hookAbil && hookAbil.IsValid && hookAbil.Level > 0) {
+			if (this.handleAutoCancelHook(hero, hookAbil)) {
+				return
+			}
+		}
+
 		// 1. Handle Auto Rot Background Toggle (Instant 0-cast-point toggle, never breaks channeling)
 		this.handleAutoRot(hero)
 
@@ -1100,6 +1276,9 @@ new (class PudgeCombo {
 
 					if (this.isHookPathClear(hero, nearestEnemy, predictedPos)) {
 						this.hookInFlightUntil = GameState.RawGameTime + hero.Distance2D(nearestEnemy) / 1600 + 0.6
+						this.castingHookTarget = nearestEnemy
+						this.castingHookPos = predictedPos
+						this.castingHookStartTime = GameState.RawGameTime
 						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
@@ -1120,18 +1299,18 @@ new (class PudgeCombo {
 		// 5. Standalone Hook Ally Key (Save)
 		// @ts-ignore
 		if (this.hookAllyKey.isPressed) {
-			const hookAbil = hero.GetAbilityByName("pudge_meat_hook")
+			const allyHook = hero.GetAbilityByName("pudge_meat_hook")
 			if (
-				hookAbil &&
-				hookAbil.IsValid &&
-				hookAbil.Level > 0 &&
-				hookAbil.Cooldown <= 0.1 &&
-				hero.Mana >= hookAbil.ManaCost
+				allyHook &&
+				allyHook.IsValid &&
+				allyHook.Level > 0 &&
+				allyHook.Cooldown <= 0.1 &&
+				hero.Mana >= allyHook.ManaCost
 			) {
 				const mousePos = InputManager.CursorOnWorld
 				let nearestAlly: Hero | undefined
 				let minDist = Infinity
-				const castRange = hookAbil.CastRange > 0 ? hookAbil.CastRange : 1300
+				const castRange = allyHook.CastRange > 0 ? allyHook.CastRange : 1300
 
 				for (const ally of EntityManager.GetEntitiesByClass(Hero)) {
 					if (
@@ -1152,22 +1331,25 @@ new (class PudgeCombo {
 				}
 
 				if (nearestAlly) {
-					const predictedPos = this.calculateHookLead(hero, nearestAlly, hookAbil)
+					const predictedPos = this.calculateHookLead(hero, nearestAlly, allyHook)
 					this.lastPredictedHookPos = predictedPos
 
 					if (this.isHookPathClear(hero, nearestAlly, predictedPos)) {
 						this.hookInFlightUntil = GameState.RawGameTime + hero.Distance2D(nearestAlly) / 1600 + 0.6
+						this.castingHookTarget = nearestAlly
+						this.castingHookPos = predictedPos
+						this.castingHookStartTime = GameState.RawGameTime
 						claimOrder()
 						ExecuteOrder.PrepareOrder({
 							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 							issuers: [hero],
 							position: predictedPos,
-							ability: hookAbil.Index,
+							ability: allyHook.Index,
 							queue: false,
 							showEffects: true,
 							isPlayerInput: false
 						})
-						this.sleeper.Sleep(hookAbil.CastPoint * 1000 + 400)
+						this.sleeper.Sleep(allyHook.CastPoint * 1000 + 400)
 						return
 					}
 				}
@@ -1250,6 +1432,9 @@ new (class PudgeCombo {
 
 							if (this.isHookPathClear(hero, bestTarget, predictedPos)) {
 								this.hookInFlightUntil = GameState.RawGameTime + dist / 1600 + 0.6
+								this.castingHookTarget = bestTarget
+								this.castingHookPos = predictedPos
+								this.castingHookStartTime = GameState.RawGameTime
 								claimOrder()
 								ExecuteOrder.PrepareOrder({
 									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,

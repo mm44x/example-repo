@@ -14,6 +14,8 @@ import "./tinker_combo"
 import "./pugna_combo"
 import "./puck_combo"
 import "./zeus_combo"
+import "./pudge_combo"
+import "./auto_sprout_breaker"
 
 import {
 	Attributes,
