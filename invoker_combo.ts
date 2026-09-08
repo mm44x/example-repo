@@ -1,5 +1,6 @@
 import {
 	Ability,
+	Color,
 	DOTA_ABILITY_BEHAVIOR,
 	dotaunitorder_t,
 	EntityManager,
@@ -7,14 +8,24 @@ import {
 	ExecuteOrder,
 	GameState,
 	Hero,
+	ImageData,
+	InputEventSDK,
 	InputManager,
+	Item,
 	LocalPlayer,
 	Menu,
+	ParticleAttachment,
+	ParticlesSDK,
+	Rectangle,
+	RendererSDK,
 	TickSleeper,
 	Unit,
-	Vector3
+	Vector2,
+	Vector3,
+	VMouseKeys
 } from "github.com/octarine-public/wrapper/index"
 
+import { claimOrder, isRealHero } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
 
 const SPELL_ORBS: Record<string, string[]> = {
@@ -30,6 +41,78 @@ const SPELL_ORBS: Record<string, string[]> = {
 	invoker_deafening_blast: ["quas", "wex", "exort"]
 }
 
+interface IComboTemplateInfo {
+	id: number
+	name: string
+	tag: string
+	desc: string
+	startingSpells: [string, string]
+	sequenceActions: string[]
+}
+
+const COMBO_TEMPLATES: IComboTemplateInfo[] = [
+	{
+		id: 0,
+		name: "Dynamic Combo",
+		tag: "DYNAMIC",
+		desc: "Custom Menu Order",
+		startingSpells: ["invoker_tornado", "invoker_emp"],
+		sequenceActions: ["invoker_tornado", "invoker_emp", "invoker_chaos_meteor", "invoker_deafening_blast"]
+	},
+	{
+		id: 1,
+		name: "Eul One-Shot (QE)",
+		tag: "EUL'S ONE-SHOT",
+		desc: "QE Core (Lv 8-15)",
+		startingSpells: ["invoker_sun_strike", "invoker_chaos_meteor"],
+		sequenceActions: [
+			"item_cyclone",
+			"invoker_sun_strike",
+			"invoker_chaos_meteor",
+			"invoker_deafening_blast",
+			"invoker_cold_snap"
+		]
+	},
+	{
+		id: 2,
+		name: "Cold Snap + Urn",
+		tag: "COLD SNAP + URN",
+		desc: "Early Gank (Lv 3-9)",
+		startingSpells: ["invoker_cold_snap", "invoker_forge_spirit"],
+		sequenceActions: [
+			"invoker_forge_spirit",
+			"invoker_cold_snap",
+			"item_urn_of_shadows",
+			"item_rod_of_atos",
+			"invoker_alacrity",
+			"invoker_sun_strike"
+		]
+	},
+	{
+		id: 3,
+		name: "Quas-Wex EMP (QW)",
+		tag: "QUAS-WEX EMP",
+		desc: "Disruptor (Lv 6-14)",
+		startingSpells: ["invoker_tornado", "invoker_emp"],
+		sequenceActions: ["invoker_tornado", "invoker_emp", "invoker_cold_snap", "item_urn_of_shadows"]
+	},
+	{
+		id: 4,
+		name: "Late Game / Refresher",
+		tag: "LATE GAME",
+		desc: "Full Teamfight (Lv 18+)",
+		startingSpells: ["invoker_tornado", "invoker_chaos_meteor"],
+		sequenceActions: [
+			"item_sheepstick",
+			"item_nullifier",
+			"invoker_tornado",
+			"invoker_chaos_meteor",
+			"invoker_deafening_blast",
+			"item_refresher"
+		]
+	}
+]
+
 new (class InvokerCombo {
 	private readonly entry = Menu.AddEntry("mm44x")
 		.AddNode("Combo Heroes", "menu/icons/juggernaut.svg")
@@ -42,7 +125,7 @@ new (class InvokerCombo {
 	private readonly useCataclysm = this.entry.AddToggle(
 		"Use Cataclysm",
 		true,
-		"Automatically toggle Alt-Cast for Sun Strike to use Cataclysm if Aghanim's is active"
+		"Cast Cataclysm (double-tap / self-cast) instead of regular Sun Strike if Aghanim's Scepter is active"
 	)
 
 	private readonly scepterUpgrade = this.entry.AddDropdown(
@@ -59,6 +142,7 @@ new (class InvokerCombo {
 			"item_cyclone",
 			"item_wind_waker",
 			"item_sheepstick",
+			"item_rod_of_atos",
 			"item_orchid",
 			"item_bloodthorn",
 			"item_nullifier",
@@ -72,6 +156,7 @@ new (class InvokerCombo {
 			["item_cyclone", true],
 			["item_wind_waker", true],
 			["item_sheepstick", true],
+			["item_rod_of_atos", true],
 			["item_orchid", true],
 			["item_bloodthorn", true],
 			["item_nullifier", true],
@@ -102,6 +187,43 @@ new (class InvokerCombo {
 		"Use STOP before moving during backswing cancel for crisper animation break"
 	)
 
+	private readonly autoSwitchOrbs = this.entry.AddToggle(
+		"Auto Switch Orbs in Combat",
+		true,
+		"Automatically switch to 3x Exort during attack/combo for maximum damage, and 3x Wex after Ghost Walk"
+	)
+
+	private readonly templatesNode = this.entry.AddNode(
+		"Combo Templates & Floating HUD",
+		"panorama/images/hud/reborn/icon_inventory_png.vtex_c"
+	)
+	private readonly activeTemplateDropdown = this.templatesNode.AddDropdown(
+		"Active Template",
+		COMBO_TEMPLATES.map(t => t.name),
+		0,
+		"Select active combo template. Can also be selected via on-screen Floating HUD Panel"
+	)
+	private readonly autoPrepareSpells = this.templatesNode.AddToggle(
+		"Auto Prepare Starting Spells",
+		true,
+		"Automatically invoke the 2 starting spells when switching templates"
+	)
+	private readonly floatingHudNode = this.templatesNode.AddNode("Floating HUD Settings")
+	private readonly floatingHudEnabled = this.floatingHudNode.AddToggle("Show Floating HUD Panel", true)
+	private readonly floatingHudKey = this.floatingHudNode.AddKeybind(
+		"Toggle HUD Key",
+		"None",
+		"Key to toggle on-screen Floating HUD Panel visibility"
+	)
+	private readonly floatingHudX = this.floatingHudNode.AddSlider("HUD Position X", 350, 0, 2500)
+	private readonly floatingHudY = this.floatingHudNode.AddSlider("HUD Position Y", 180, 0, 2500)
+
+	private isDraggingHud = false
+	private dragOffsetX = 0
+	private dragOffsetY = 0
+	private pendingPrepareSpells: string[] = []
+
+	private readonly pSDK = new ParticlesSDK()
 	private comboSequenceGrid: any
 	private lockedTarget: Hero | undefined = undefined
 	private readonly sleeper = new TickSleeper()
@@ -123,6 +245,7 @@ new (class InvokerCombo {
 	private pendingAutoSkill: string | null = null
 	private autoSkillCursorPos: Vector3 | null = null
 	private pendingSunstrikePos: Vector3 | null = null
+	private lastCataclysmCast = 0
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
@@ -137,7 +260,7 @@ new (class InvokerCombo {
 		defaultCombo.set("invoker_forge_spirit", [true, true, true, 8])
 
 		this.comboSequenceGrid = this.entry.AddDynamicImageSelector(
-			"Combo Order",
+			"Combo Order (Dynamic Combo)",
 			[
 				"invoker_tornado",
 				"invoker_emp",
@@ -261,6 +384,23 @@ new (class InvokerCombo {
 			"Allow auto Sunstrike while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
 		)
 
+		this.activeTemplateDropdown.OnValue(() => {
+			if (this.hasLocalHero && this.autoPrepareSpells.value) {
+				const hero = LocalPlayer?.Hero
+				if (hero && hero.IsValid && hero.IsAlive) {
+					this.triggerAutoPrepare(hero, this.activeTemplateDropdown.SelectedID)
+				}
+			}
+		})
+
+		this.floatingHudKey.OnPressed(() => {
+			this.floatingHudEnabled.value = !this.floatingHudEnabled.value
+			Menu.Base.SaveConfigASAP = true
+		})
+
+		EventsSDK.on("Draw", this.OnDraw.bind(this))
+		InputEventSDK.on("MouseKeyDown", this.OnMouseKeyDown.bind(this))
+		InputEventSDK.on("MouseKeyUp", this.OnMouseKeyUp.bind(this))
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
 		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
@@ -276,7 +416,15 @@ new (class InvokerCombo {
 	}
 
 	private hasScepter(hero: Hero): boolean {
-		return hero.HasScepter || hero.HasItemInInventory("item_ultimate_scepter_2")
+		return (
+			hero.HasScepter ||
+			hero.HasItemInInventory("item_ultimate_scepter") ||
+			hero.HasItemInInventory("item_ultimate_scepter_2") ||
+			hero.HasItemInInventory("item_ultimate_scepter_roshan") ||
+			hero.HasBuffByName("modifier_item_ultimate_scepter_consumed") ||
+			hero.HasBuffByName("modifier_item_ultimate_scepter_consumed_alchemist") ||
+			hero.HasBuffByName("modifier_item_ultimate_scepter")
+		)
 	}
 
 	private getActiveIceWallAbility(hero: Hero): Ability | undefined {
@@ -355,6 +503,7 @@ new (class InvokerCombo {
 				showEffects: true,
 				isPlayerInput: false
 			})
+			claimOrder()
 			return true
 		} else if (isTarget) {
 			ExecuteOrder.PrepareOrder({
@@ -366,6 +515,7 @@ new (class InvokerCombo {
 				showEffects: true,
 				isPlayerInput: false
 			})
+			claimOrder()
 			return true
 		} else if (isNoTarget) {
 			ExecuteOrder.PrepareOrder({
@@ -376,13 +526,104 @@ new (class InvokerCombo {
 				showEffects: true,
 				isPlayerInput: false
 			})
+			claimOrder()
 			return true
 		}
 		return false
 	}
 
-	private useTargetItem(hero: Hero, itemName: string, target: Hero | Unit): boolean {
-		if (!this.itemsSelector.IsEnabled(itemName)) {
+	private isItemEnabledForCombo(itemName: string, templateId: number): boolean {
+		if (templateId === 0) {
+			if (
+				itemName === "item_arcane_blink" ||
+				itemName === "item_overwhelming_blink" ||
+				itemName === "item_swift_blink"
+			) {
+				return this.itemsSelector.IsEnabled("item_blink")
+			}
+			if (itemName === "item_wind_waker") {
+				return this.itemsSelector.IsEnabled("item_wind_waker") || this.itemsSelector.IsEnabled("item_cyclone")
+			}
+			if (itemName === "item_gungir") {
+				return this.itemsSelector.IsEnabled("item_rod_of_atos")
+			}
+			if (itemName === "item_bloodthorn") {
+				return this.itemsSelector.IsEnabled("item_bloodthorn") || this.itemsSelector.IsEnabled("item_orchid")
+			}
+			if (itemName === "item_spirit_vessel") {
+				return (
+					this.itemsSelector.IsEnabled("item_spirit_vessel") ||
+					this.itemsSelector.IsEnabled("item_urn_of_shadows")
+				)
+			}
+			if (itemName === "item_refresher_shard") {
+				return this.itemsSelector.IsEnabled("item_refresher")
+			}
+			return this.itemsSelector.IsEnabled(itemName)
+		}
+
+		// Preset templates ignore menu item toggles
+		switch (templateId) {
+			case 1: // Eul One-Shot
+				return (
+					itemName === "item_cyclone" ||
+					itemName === "item_wind_waker" ||
+					itemName === "item_blink" ||
+					itemName === "item_arcane_blink" ||
+					itemName === "item_overwhelming_blink" ||
+					itemName === "item_swift_blink" ||
+					itemName === "item_urn_of_shadows" ||
+					itemName === "item_spirit_vessel"
+				)
+			case 2: // Cold Snap + Urn
+				return (
+					itemName === "item_urn_of_shadows" ||
+					itemName === "item_spirit_vessel" ||
+					itemName === "item_rod_of_atos" ||
+					itemName === "item_gungir" ||
+					itemName === "item_blink" ||
+					itemName === "item_arcane_blink" ||
+					itemName === "item_overwhelming_blink" ||
+					itemName === "item_swift_blink"
+				)
+			case 3: // Quas-Wex EMP
+				return (
+					itemName === "item_urn_of_shadows" ||
+					itemName === "item_spirit_vessel" ||
+					itemName === "item_rod_of_atos" ||
+					itemName === "item_gungir" ||
+					itemName === "item_orchid" ||
+					itemName === "item_bloodthorn" ||
+					itemName === "item_blink" ||
+					itemName === "item_arcane_blink" ||
+					itemName === "item_overwhelming_blink" ||
+					itemName === "item_swift_blink"
+				)
+			case 4: // Late Game / Refresher
+				return (
+					itemName === "item_sheepstick" ||
+					itemName === "item_nullifier" ||
+					itemName === "item_orchid" ||
+					itemName === "item_bloodthorn" ||
+					itemName === "item_rod_of_atos" ||
+					itemName === "item_gungir" ||
+					itemName === "item_shivas_guard" ||
+					itemName === "item_refresher" ||
+					itemName === "item_refresher_shard" ||
+					itemName === "item_blink" ||
+					itemName === "item_arcane_blink" ||
+					itemName === "item_overwhelming_blink" ||
+					itemName === "item_swift_blink" ||
+					itemName === "item_urn_of_shadows" ||
+					itemName === "item_spirit_vessel"
+				)
+			default:
+				return false
+		}
+	}
+
+	private useTargetItem(hero: Hero, itemName: string, target: Hero | Unit, templateId: number): boolean {
+		if (!this.isItemEnabledForCombo(itemName, templateId)) {
 			return false
 		}
 		const item = hero.Items.find(i => i.Name === itemName)
@@ -396,13 +637,14 @@ new (class InvokerCombo {
 				showEffects: true,
 				isPlayerInput: false
 			})
+			claimOrder()
 			return true
 		}
 		return false
 	}
 
-	private useNoTargetItem(hero: Hero, itemName: string): boolean {
-		if (!this.itemsSelector.IsEnabled(itemName)) {
+	private useNoTargetItem(hero: Hero, itemName: string, templateId: number): boolean {
+		if (!this.isItemEnabledForCombo(itemName, templateId)) {
 			return false
 		}
 		const item = hero.Items.find(i => i.Name === itemName)
@@ -415,9 +657,67 @@ new (class InvokerCombo {
 				showEffects: true,
 				isPlayerInput: false
 			})
+			claimOrder()
 			return true
 		}
 		return false
+	}
+
+	private getBlinkItem(hero: Hero, templateId: number): Item | undefined {
+		if (!this.isItemEnabledForCombo("item_blink", templateId)) {
+			return undefined
+		}
+		const blinkNames = ["item_blink", "item_arcane_blink", "item_overwhelming_blink", "item_swift_blink"]
+		return hero.Items.find(i => blinkNames.includes(i.Name))
+	}
+
+	private getRefresherItem(hero: Hero, templateId: number): Item | undefined {
+		if (!this.isItemEnabledForCombo("item_refresher", templateId)) {
+			return undefined
+		}
+		return hero.Items.find(i => i.Name === "item_refresher" || i.Name === "item_refresher_shard")
+	}
+
+	private getAtosItem(hero: Hero, templateId: number): Item | undefined {
+		if (!this.isItemEnabledForCombo("item_rod_of_atos", templateId)) {
+			return undefined
+		}
+		return hero.Items.find(i => i.Name === "item_rod_of_atos" || i.Name === "item_gungir")
+	}
+
+	private hasSpellBlock(target: Hero): boolean {
+		if (target.HasBuffByName("modifier_item_sphere_target")) {
+			return true
+		}
+		const linken = target.GetBuffByName("modifier_item_sphere")
+		if (linken && linken.Ability && linken.Ability.Cooldown <= 0.1) {
+			return true
+		}
+		const mirror = target.GetBuffByName("modifier_item_mirror_shield")
+		if (mirror && mirror.Ability && mirror.Ability.Cooldown <= 0.1) {
+			return true
+		}
+		return false
+	}
+
+	private switchOrbs(hero: Hero, orbType: "quas" | "wex" | "exort"): void {
+		if (!this.autoSwitchOrbs.value) {
+			return
+		}
+		const orbAbility = hero.GetAbilityByName(`invoker_${orbType}`)
+		if (!orbAbility || orbAbility.Level <= 0) {
+			return
+		}
+		for (let i = 0; i < 3; i++) {
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+				issuers: [hero],
+				ability: orbAbility.Index,
+				queue: false,
+				showEffects: false,
+				isPlayerInput: false
+			})
+		}
 	}
 
 	private invokeSpell(hero: Hero, spellName: string, invokeAbility: Ability): boolean {
@@ -448,11 +748,12 @@ new (class InvokerCombo {
 			showEffects: true,
 			isPlayerInput: false
 		})
+		claimOrder()
 
 		return true
 	}
 
-	private castInvokerSpell(hero: Hero, ability: Ability, target: Hero, liftBuff: any): boolean {
+	private castInvokerSpell(hero: Hero, ability: Ability, target: Hero, liftBuff: any, templateId: number): boolean {
 		const name = ability.Name
 
 		// 1. If target is lifted in the air by Tornado or Cyclone
@@ -461,35 +762,31 @@ new (class InvokerCombo {
 			const castPoint = ability.CastPoint
 			const delayBuffer = GameState.InputLag
 
-			if (name === "invoker_sun_strike") {
+			if (name === "invoker_sun_strike" || name === "invoker_sun_strike_ad") {
 				const ssDelay = 1.7
 				const triggerTime = ssDelay + castPoint + delayBuffer
 				if (rem <= triggerTime) {
 					const wantCataclysm = this.useCataclysm.value && this.isSunStrikeUpgraded(hero)
 					if (wantCataclysm) {
-						if (!ability.AltCastState) {
-							ExecuteOrder.PrepareOrder({
-								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
-								issuers: [hero],
-								ability: ability.Index,
-								queue: false,
-								showEffects: false,
-								isPlayerInput: false
-							})
-						}
-					} else if (ability.AltCastState) {
 						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 							issuers: [hero],
-							ability: ability.Index,
+							target: hero,
+							position: hero.Position.Clone(),
+							ability,
 							queue: false,
-							showEffects: false,
+							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
+						this.lastCataclysmCast = GameState.RawGameTime
+						console.log("[InvokerCombo] Timed Cataclysm casted (target self / double-tap)!")
+						this.sleeper.Sleep(delayBuffer * 1000 + castPoint * 1000 + 150)
+						return true
 					}
 
 					if (this.executeComboAbility(hero, ability, target, true, target.Position)) {
-						console.log("[InvokerCombo] Timed Sun Strike / Cataclysm casted!")
+						console.log("[InvokerCombo] Timed Sun Strike casted!")
 						this.sleeper.Sleep(delayBuffer * 1000 + castPoint * 1000 + 100)
 						return true
 					}
@@ -553,28 +850,24 @@ new (class InvokerCombo {
 		}
 
 		// 2. Normal Cast (No lift buff active)
-		if (name === "invoker_sun_strike") {
+		if (name === "invoker_sun_strike" || name === "invoker_sun_strike_ad") {
 			const wantCataclysm = this.useCataclysm.value && this.isSunStrikeUpgraded(hero)
 			if (wantCataclysm) {
-				if (!ability.AltCastState) {
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
-						issuers: [hero],
-						ability: ability.Index,
-						queue: false,
-						showEffects: false,
-						isPlayerInput: false
-					})
-				}
-			} else if (ability.AltCastState) {
 				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 					issuers: [hero],
-					ability: ability.Index,
+					target: hero,
+					position: hero.Position.Clone(),
+					ability,
 					queue: false,
-					showEffects: false,
+					showEffects: true,
 					isPlayerInput: false
 				})
+				claimOrder()
+				this.lastCataclysmCast = GameState.RawGameTime
+				console.log("[InvokerCombo] Cataclysm casted (target self / double-tap)!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 150)
+				return true
 			}
 			const ssPos = target.Position.Add(target.Forward.MultiplyScalar(target.IsMoving ? 150 : 0))
 			if (this.executeComboAbility(hero, ability, target, true, ssPos)) {
@@ -660,8 +953,8 @@ new (class InvokerCombo {
 		} else if (name === "invoker_cold_snap") {
 			if (this.executeComboAbility(hero, ability, target)) {
 				console.log("[InvokerCombo] Casted Cold Snap!")
-				this.useTargetItem(hero, "item_urn_of_shadows", target)
-				this.useTargetItem(hero, "item_spirit_vessel", target)
+				this.useTargetItem(hero, "item_urn_of_shadows", target, templateId)
+				this.useTargetItem(hero, "item_spirit_vessel", target, templateId)
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 				return true
 			}
@@ -673,11 +966,277 @@ new (class InvokerCombo {
 		return false
 	}
 
+	private triggerAutoPrepare(hero: Hero, templateId: number): void {
+		const tmpl = COMBO_TEMPLATES.find(t => t.id === templateId)
+		if (!tmpl) {
+			return
+		}
+
+		let spells = tmpl.startingSpells
+		if (templateId === 0 && this.comboSequenceGrid) {
+			const enabled = this.comboSequenceGrid.values.filter((s: string) => this.comboSequenceGrid.IsEnabled(s))
+			if (enabled.length >= 2) {
+				spells = [enabled[0], enabled[1]]
+			}
+		}
+
+		const [spell1, spell2] = spells
+		const hasSpell1 = hero.Spells.some(s => s && s.Name === spell1 && !s.IsHidden)
+		const hasSpell2 = hero.Spells.some(s => s && s.Name === spell2 && !s.IsHidden)
+
+		this.pendingPrepareSpells = []
+		if (hasSpell1 && hasSpell2) {
+			return
+		}
+
+		if (!hasSpell1 && !hasSpell2) {
+			// Invoke spell2 first, then spell1, so slot 4 ends up being spell1 and slot 5 is spell2
+			this.pendingPrepareSpells = [spell2, spell1]
+		} else if (!hasSpell1) {
+			this.pendingPrepareSpells = [spell1]
+		} else if (!hasSpell2) {
+			this.pendingPrepareSpells = [spell2]
+		}
+
+		this.processPendingPrepare(hero)
+	}
+
+	private processPendingPrepare(hero: Hero): void {
+		if (this.pendingPrepareSpells.length === 0) {
+			return
+		}
+		if (hero.IsChanneling || hero.IsStunned || hero.IsSilenced || hero.IsHexed) {
+			return
+		}
+
+		const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+		if (
+			!invokeAbility ||
+			!invokeAbility.IsValid ||
+			invokeAbility.Cooldown > 0.1 ||
+			hero.Mana < invokeAbility.ManaCost
+		) {
+			return
+		}
+
+		const nextSpell = this.pendingPrepareSpells[0]
+		if (this.invokeSpell(hero, nextSpell, invokeAbility)) {
+			console.log(`[InvokerCombo] Auto Prepare: Invoked ${nextSpell}`)
+			this.pendingPrepareSpells.shift()
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+		}
+	}
+
+	private OnDraw(): void {
+		if (!this.hasLocalHero || !this.floatingHudEnabled.value) {
+			return
+		}
+
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			return
+		}
+
+		if (this.isDraggingHud) {
+			const cursorPos = InputManager.CursorOnScreen
+			const newX = cursorPos.x - this.dragOffsetX
+			const newY = cursorPos.y - this.dragOffsetY
+			this.floatingHudX.value = Math.max(0, Math.round(newX))
+			this.floatingHudY.value = Math.max(0, Math.round(newY))
+		}
+
+		const panelX = this.floatingHudX.value
+		const panelY = this.floatingHudY.value
+		const panelWidth = 330
+		const headerHeight = 24
+		const rowHeight = 44
+		const footerHeight = 26
+		const panelHeight = headerHeight + COMBO_TEMPLATES.length * rowHeight + footerHeight
+
+		const panelPos = new Vector2(panelX, panelY)
+		const panelSize = new Vector2(panelWidth, panelHeight)
+
+		RendererSDK.FilledRect(panelPos, panelSize, Color.Black.SetA(185))
+		RendererSDK.OutlinedRect(panelPos, panelSize, 1, Color.White.SetA(70))
+
+		const headerSize = new Vector2(panelWidth, headerHeight)
+		RendererSDK.FilledRect(panelPos, headerSize, Color.Black.SetA(225))
+		RendererSDK.OutlinedRect(panelPos, headerSize, 1, Color.White.SetA(70))
+
+		const font = RendererSDK.DefaultFontName
+		const titleText = "INVOKER COMBO TEMPLATES"
+		const titleSize = RendererSDK.GetTextSize(titleText, font, 11, 700, false)
+		const titleX = panelX + (panelWidth - titleSize.x) / 2
+		const titleY = panelY + (headerHeight - titleSize.y) / 2
+		RendererSDK.Text(titleText, new Vector2(titleX, titleY), Color.White, font, 11, 700, false, true)
+
+		const currentSelectedId = this.activeTemplateDropdown.SelectedID
+		for (let i = 0; i < COMBO_TEMPLATES.length; i++) {
+			const tmpl = COMBO_TEMPLATES[i]
+			const rowY = panelY + headerHeight + i * rowHeight
+			const rowPos = new Vector2(panelX + 4, rowY + 2)
+			const rowSize = new Vector2(panelWidth - 8, rowHeight - 4)
+			const isActive = currentSelectedId === tmpl.id
+
+			if (isActive) {
+				RendererSDK.FilledRect(rowPos, rowSize, Color.Green.SetA(45))
+				RendererSDK.OutlinedRect(rowPos, rowSize, 2, Color.Green)
+			} else {
+				RendererSDK.FilledRect(rowPos, rowSize, Color.Black.SetA(140))
+				RendererSDK.OutlinedRect(rowPos, rowSize, 1, Color.White.SetA(40))
+			}
+
+			const tagColor = isActive ? Color.Green : Color.White
+			RendererSDK.Text(tmpl.tag, new Vector2(rowPos.x + 8, rowPos.y + 4), tagColor, font, 11, 700, false, true)
+			RendererSDK.Text(tmpl.desc, new Vector2(rowPos.x + 8, rowPos.y + 22), Color.Gray, font, 9, 400, false, true)
+
+			let actions = tmpl.sequenceActions
+			if (tmpl.id === 0 && this.comboSequenceGrid) {
+				const enabled = this.comboSequenceGrid.values.filter((s: string) => this.comboSequenceGrid.IsEnabled(s))
+				if (enabled.length > 0) {
+					actions = enabled.slice(0, 5)
+				}
+			}
+
+			const iconW = 24
+			const iconH = 24
+			const iconGap = 4
+			const totalIconsW = actions.length * iconW + (actions.length - 1) * iconGap
+			const startIconX = rowPos.x + rowSize.x - totalIconsW - 6
+			const iconY = rowPos.y + (rowSize.y - iconH) / 2
+
+			for (let j = 0; j < actions.length; j++) {
+				const action = actions[j]
+				const isItem = action.startsWith("item_")
+				const path = isItem ? ImageData.GetItemTexture(action) : ImageData.GetSpellTexture(action)
+				const iconPos = new Vector2(startIconX + j * (iconW + iconGap), iconY)
+				const iconSize = new Vector2(iconW, iconH)
+
+				RendererSDK.Image(path, iconPos, -1, iconSize, Color.White, 0, undefined, false)
+
+				const iconBorderColor = isItem
+					? Color.Yellow.SetA(160)
+					: isActive
+					? Color.Green.SetA(180)
+					: Color.White.SetA(70)
+				RendererSDK.OutlinedRect(iconPos, iconSize, 1, iconBorderColor)
+			}
+		}
+
+		const footerY = panelY + headerHeight + COMBO_TEMPLATES.length * rowHeight
+		const footerPos = new Vector2(panelX + 4, footerY + 2)
+		const footerSize = new Vector2(panelWidth - 8, footerHeight - 4)
+		const prepEnabled = this.autoPrepareSpells.value
+
+		RendererSDK.FilledRect(footerPos, footerSize, Color.Black.SetA(200))
+		RendererSDK.OutlinedRect(footerPos, footerSize, 1, prepEnabled ? Color.Green.SetA(140) : Color.Red.SetA(140))
+
+		const prepText = `Auto Prepare Starting Spells: [ ${prepEnabled ? "ON" : "OFF"} ]`
+		const prepTextSize = RendererSDK.GetTextSize(prepText, font, 9, 700, false)
+		const prepTextX = footerPos.x + (footerSize.x - prepTextSize.x) / 2
+		const prepTextY = footerPos.y + (footerSize.y - prepTextSize.y) / 2
+
+		RendererSDK.Text(
+			prepText,
+			new Vector2(prepTextX, prepTextY),
+			prepEnabled ? Color.Green : Color.Red,
+			font,
+			9,
+			700,
+			false,
+			true
+		)
+	}
+
+	private OnMouseKeyDown(key: VMouseKeys): boolean | void {
+		if (key !== VMouseKeys.MK_LBUTTON) {
+			return
+		}
+		if (!this.hasLocalHero || !this.floatingHudEnabled.value) {
+			return
+		}
+		const hero = LocalPlayer?.Hero
+		if (!hero || !hero.IsValid) {
+			return
+		}
+
+		const cursorPos = InputManager.CursorOnScreen
+		const panelX = this.floatingHudX.value
+		const panelY = this.floatingHudY.value
+		const panelWidth = 330
+		const headerHeight = 24
+		const rowHeight = 44
+		const footerHeight = 26
+		const panelHeight = headerHeight + COMBO_TEMPLATES.length * rowHeight + footerHeight
+
+		const panelRect = new Rectangle(
+			new Vector2(panelX, panelY),
+			new Vector2(panelX + panelWidth, panelY + panelHeight)
+		)
+
+		if (!panelRect.Contains(cursorPos)) {
+			return
+		}
+
+		const headerRect = new Rectangle(
+			new Vector2(panelX, panelY),
+			new Vector2(panelX + panelWidth, panelY + headerHeight)
+		)
+		if (headerRect.Contains(cursorPos)) {
+			this.isDraggingHud = true
+			this.dragOffsetX = cursorPos.x - panelX
+			this.dragOffsetY = cursorPos.y - panelY
+			return true
+		}
+
+		for (let i = 0; i < COMBO_TEMPLATES.length; i++) {
+			const rowY = panelY + headerHeight + i * rowHeight
+			const rowRect = new Rectangle(
+				new Vector2(panelX + 4, rowY + 2),
+				new Vector2(panelX + panelWidth - 4, rowY + rowHeight - 2)
+			)
+			if (rowRect.Contains(cursorPos)) {
+				const tmpl = COMBO_TEMPLATES[i]
+				this.activeTemplateDropdown.SelectedID = tmpl.id
+				if (this.autoPrepareSpells.value) {
+					this.triggerAutoPrepare(hero, tmpl.id)
+				}
+				Menu.Base.SaveConfigASAP = true
+				return true
+			}
+		}
+
+		const footerY = panelY + headerHeight + COMBO_TEMPLATES.length * rowHeight
+		const footerRect = new Rectangle(
+			new Vector2(panelX + 4, footerY + 2),
+			new Vector2(panelX + panelWidth - 4, footerY + footerHeight - 2)
+		)
+		if (footerRect.Contains(cursorPos)) {
+			this.autoPrepareSpells.value = !this.autoPrepareSpells.value
+			if (this.autoPrepareSpells.value) {
+				this.triggerAutoPrepare(hero, this.activeTemplateDropdown.SelectedID)
+			}
+			Menu.Base.SaveConfigASAP = true
+			return true
+		}
+	}
+
+	private OnMouseKeyUp(key: VMouseKeys): boolean | void {
+		if (key === VMouseKeys.MK_LBUTTON && this.isDraggingHud) {
+			this.isDraggingHud = false
+			Menu.Base.SaveConfigASAP = true
+			return true
+		}
+	}
+
 	private onGameEnded(): void {
 		this.sleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.pendingAutoSkill = null
 		this.autoSkillCursorPos = null
+		this.isDraggingHud = false
+		this.pendingPrepareSpells = []
+		this.pSDK.DestroyAll()
 	}
 
 	private PostDataUpdate(delta: number): void {
@@ -696,6 +1255,10 @@ new (class InvokerCombo {
 
 		if (!this.comboEnabled.value) {
 			return
+		}
+
+		if (this.pendingPrepareSpells.length > 0 && !this.comboKey.isPressed && !this.sleeper.Sleeping) {
+			this.processPendingPrepare(hero)
 		}
 
 		// @ts-ignore
@@ -768,7 +1331,11 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} (no target)`)
+					if (spellName === "invoker_ghost_walk") {
+						this.switchOrbs(hero, "wex")
+					}
 					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 					this.pendingAutoSkill = null
 					this.autoSkillCursorPos = null
@@ -784,7 +1351,7 @@ new (class InvokerCombo {
 								let best: Hero | undefined
 								let minDist = Infinity
 								for (const enemy of enemies) {
-									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
+									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && isRealHero(enemy)) {
 										const d = enemy.Position.Distance2D(cursorPos)
 										if (d < 800 && d < minDist) {
 											best = enemy
@@ -805,6 +1372,7 @@ new (class InvokerCombo {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} on target`)
 						this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 						this.pendingAutoSkill = null
@@ -818,6 +1386,7 @@ new (class InvokerCombo {
 				if (spellName === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
 					const end = cursorPos.Extend(hero.Position, 600)
 					hero.CastVectorTargetPosition(ability, cursorPos, end)
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} as vector at cursor`)
 				} else {
 					ExecuteOrder.PrepareOrder({
@@ -829,6 +1398,7 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
 				}
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
@@ -862,7 +1432,11 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} (no target)`)
+					if (this.pendingAutoSkill === "invoker_ghost_walk") {
+						this.switchOrbs(hero, "wex")
+					}
 				} else if (ability.HasBehavior(DOTA_ABILITY_BEHAVIOR.DOTA_ABILITY_BEHAVIOR_UNIT_TARGET)) {
 					const isSelfCast = this.pendingAutoSkill === "invoker_alacrity"
 					const castTarget = isSelfCast
@@ -872,7 +1446,7 @@ new (class InvokerCombo {
 								let best: Hero | undefined
 								let minDist = Infinity
 								for (const enemy of enemies) {
-									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && !enemy.IsIllusion) {
+									if (enemy.IsEnemy(hero) && enemy.IsAlive && enemy.IsVisible && isRealHero(enemy)) {
 										const d = enemy.Position.Distance2D(cursorPos)
 										if (d < 800 && d < minDist) {
 											best = enemy
@@ -893,11 +1467,13 @@ new (class InvokerCombo {
 							showEffects: true,
 							isPlayerInput: false
 						})
+						claimOrder()
 						console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} on target`)
 					}
 				} else if (this.pendingAutoSkill === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
 					const end = cursorPos.Extend(hero.Position, 600)
 					hero.CastVectorTargetPosition(ability, cursorPos, end)
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} as vector at cursor`)
 				} else {
 					ExecuteOrder.PrepareOrder({
@@ -909,6 +1485,7 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					console.log(`[InvokerCombo] Auto Skill: Cast pending ${this.pendingAutoSkill} at cursor`)
 				}
 
@@ -934,7 +1511,7 @@ new (class InvokerCombo {
 				let disruptTarget: Hero | undefined
 				let minDist = Infinity
 				for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-					if (enemy.IsEnemy(hero) && enemy.IsAlive && !enemy.IsIllusion && !enemy.IsMagicImmune) {
+					if (enemy.IsEnemy(hero) && enemy.IsAlive && isRealHero(enemy) && !enemy.IsMagicImmune) {
 						const isChanneling =
 							enemy.IsChanneling ||
 							enemy.Buffs.some(b => {
@@ -1070,6 +1647,7 @@ new (class InvokerCombo {
 										isPlayerInput: false
 									})
 								}
+								claimOrder()
 								console.log(`[InvokerCombo] Auto Disrupt: Cast ${chosenSpell} on ${disruptTarget.Name}`)
 								this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 								return
@@ -1084,6 +1662,17 @@ new (class InvokerCombo {
 		if (this.pendingSunstrikePos && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
 			const ss = hero.GetAbilityByName("invoker_sun_strike")
 			if (ss && ss.IsValid && !ss.IsHidden && ss.Cooldown <= 0.1 && hero.Mana >= ss.ManaCost) {
+				if (ss.AltCastState) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+						issuers: [hero],
+						ability: ss.Index,
+						queue: false,
+						showEffects: false,
+						isPlayerInput: false
+					})
+					claimOrder()
+				}
 				ExecuteOrder.PrepareOrder({
 					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 					issuers: [hero],
@@ -1093,6 +1682,7 @@ new (class InvokerCombo {
 					showEffects: true,
 					isPlayerInput: false
 				})
+				claimOrder()
 				console.log(
 					`[InvokerCombo] Auto Sunstrike: Cast pending at ${this.pendingSunstrikePos.x.toFixed(
 						0
@@ -1113,7 +1703,8 @@ new (class InvokerCombo {
 			!hero.IsStunned &&
 			!hero.IsSilenced &&
 			!hero.IsHexed &&
-			!this.sleeper.Sleeping
+			!this.sleeper.Sleeping &&
+			GameState.RawGameTime - this.lastCataclysmCast > 2.0
 		) {
 			if (!this.sunstrikeInvis.value && hero.IsInvisible) {
 				// skip invis check below
@@ -1137,7 +1728,7 @@ new (class InvokerCombo {
 									!enemy.IsEnemy(hero) ||
 									!enemy.IsAlive ||
 									!enemy.IsVisible ||
-									enemy.IsIllusion ||
+									!isRealHero(enemy) ||
 									enemy.IsMagicImmune
 								) {
 									continue
@@ -1148,8 +1739,8 @@ new (class InvokerCombo {
 								const isBashed = enemy.Buffs.some(b => b.Name.startsWith("modifier_bashed"))
 								const isCycloned = enemy.Buffs.some(
 									b =>
-										b.Name === "modifier_euler_cyclone" ||
-										b.Name === "modifier_wind_waker_active" ||
+										b.Name === "modifier_eul_cyclone" ||
+										b.Name === "modifier_wind_waker" ||
 										b.Name === "modifier_invoker_tornado"
 								)
 								const isChanneling =
@@ -1202,8 +1793,8 @@ new (class InvokerCombo {
 								if (isCycloned) {
 									const cycloneBuff = enemy.Buffs.find(
 										b =>
-											b.Name === "modifier_euler_cyclone" ||
-											b.Name === "modifier_wind_waker_active" ||
+											b.Name === "modifier_eul_cyclone" ||
+											b.Name === "modifier_wind_waker" ||
 											b.Name === "modifier_invoker_tornado"
 									)
 									if (cycloneBuff) {
@@ -1224,6 +1815,17 @@ new (class InvokerCombo {
 
 								const castPos = enemy.Position.Clone()
 								if (ssActive) {
+									if (sunstrike.AltCastState) {
+										ExecuteOrder.PrepareOrder({
+											orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+											issuers: [hero],
+											ability: sunstrike.Index,
+											queue: false,
+											showEffects: false,
+											isPlayerInput: false
+										})
+										claimOrder()
+									}
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 										issuers: [hero],
@@ -1233,6 +1835,7 @@ new (class InvokerCombo {
 										showEffects: true,
 										isPlayerInput: false
 									})
+									claimOrder()
 									console.log(
 										`[InvokerCombo] Auto Sunstrike: Cast on stunned/channeled ${enemy.Name}`
 									)
@@ -1258,7 +1861,7 @@ new (class InvokerCombo {
 									!enemy.IsEnemy(hero) ||
 									!enemy.IsAlive ||
 									!enemy.IsVisible ||
-									enemy.IsIllusion ||
+									!isRealHero(enemy) ||
 									enemy.IsMagicImmune
 								) {
 									continue
@@ -1282,6 +1885,17 @@ new (class InvokerCombo {
 								const predictedPos = enemy.Position.Add(forward.MultiplyScalar(predDistance))
 
 								if (ssActive) {
+									if (sunstrike.AltCastState) {
+										ExecuteOrder.PrepareOrder({
+											orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT,
+											issuers: [hero],
+											ability: sunstrike.Index,
+											queue: false,
+											showEffects: false,
+											isPlayerInput: false
+										})
+										claimOrder()
+									}
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
 										issuers: [hero],
@@ -1291,6 +1905,7 @@ new (class InvokerCombo {
 										showEffects: true,
 										isPlayerInput: false
 									})
+									claimOrder()
 									console.log(
 										`[InvokerCombo] Auto Sunstrike: Predicted walking ${
 											enemy.Name
@@ -1317,6 +1932,8 @@ new (class InvokerCombo {
 
 		// @ts-ignore
 		if (!this.comboKey.isPressed) {
+			this.lockedTarget = undefined
+			this.pSDK.DestroyByKey("invoker_target_ring")
 			return
 		}
 
@@ -1329,9 +1946,10 @@ new (class InvokerCombo {
 				!this.lockedTarget.IsValid ||
 				!this.lockedTarget.IsAlive ||
 				!this.lockedTarget.IsVisible ||
-				this.lockedTarget.IsIllusion
+				!isRealHero(this.lockedTarget)
 			) {
 				this.lockedTarget = undefined
+				this.pSDK.DestroyByKey("invoker_target_ring")
 			}
 		}
 
@@ -1342,7 +1960,7 @@ new (class InvokerCombo {
 			let minDist = Infinity
 
 			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && isRealHero(enemy)) {
 					const distToCursor = enemy.Position.Distance2D(mousePos)
 					const distToHero = hero.Distance2D(enemy)
 					if (distToCursor < this.comboRadius.value && distToHero <= maxCastRange && distToCursor < minDist) {
@@ -1359,23 +1977,25 @@ new (class InvokerCombo {
 
 		const bestTarget = this.lockedTarget
 		if (!bestTarget) {
+			this.pSDK.DestroyByKey("invoker_target_ring")
 			return
 		}
+
+		this.pSDK.DrawCircle("invoker_target_ring", bestTarget, 140, {
+			Color: new Color(100, 200, 255, 220),
+			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+		})
 
 		if (this.sleeper.Sleeping) {
 			return
 		}
 
+		const selectedTemplate = this.activeTemplateDropdown.SelectedID
 		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
 		if (!isTargetImmune) {
-			const blink = hero.Items.find(i => i.Name.startsWith("item_blink"))
-			if (
-				blink &&
-				this.itemsSelector.IsEnabled("item_blink") &&
-				blink.Cooldown <= 0.1 &&
-				hero.Mana >= blink.ManaCost
-			) {
+			const blink = this.getBlinkItem(hero, selectedTemplate)
+			if (blink && blink.Cooldown <= 0.1 && hero.Mana >= blink.ManaCost) {
 				const blinkRange = 1200
 				const currentDist = hero.Distance2D(bestTarget)
 				if (currentDist > 600 && currentDist <= blinkRange + 200) {
@@ -1389,27 +2009,89 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 					return
 				}
 			}
 
-			if (this.useTargetItem(hero, "item_sheepstick", bestTarget)) {
-				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
-			}
+			const targetHasSpellBlock = this.hasSpellBlock(bestTarget)
+			if (targetHasSpellBlock) {
+				// Try to break Linken's with Urn or Spirit Vessel
+				const urn = hero.Items.find(
+					i =>
+						(i.Name === "item_urn_of_shadows" || i.Name === "item_spirit_vessel") &&
+						this.isItemEnabledForCombo(i.Name, selectedTemplate) &&
+						i.Cooldown <= 0.1 &&
+						hero.Mana >= i.ManaCost
+				)
+				if (urn) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: bestTarget.Index,
+						ability: urn.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					claimOrder()
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
+			} else {
+				if (this.useTargetItem(hero, "item_sheepstick", bestTarget, selectedTemplate)) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
 
-			if (this.useTargetItem(hero, "item_nullifier", bestTarget)) {
-				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
-			}
+				if (this.useTargetItem(hero, "item_nullifier", bestTarget, selectedTemplate)) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
 
-			if (
-				this.useTargetItem(hero, "item_orchid", bestTarget) ||
-				this.useTargetItem(hero, "item_bloodthorn", bestTarget)
-			) {
-				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
-				return
+				const atos = this.getAtosItem(hero, selectedTemplate)
+				if (
+					atos &&
+					atos.Cooldown <= 0.1 &&
+					hero.Mana >= atos.ManaCost &&
+					hero.Distance2D(bestTarget) <= 1100 &&
+					!bestTarget.IsStunned &&
+					!bestTarget.IsRooted
+				) {
+					claimOrder()
+					if (atos.Name === "item_gungir") {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+							issuers: [hero],
+							position: bestTarget.Position.Clone(),
+							ability: atos.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+					} else {
+						ExecuteOrder.PrepareOrder({
+							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+							issuers: [hero],
+							target: bestTarget.Index,
+							ability: atos.Index,
+							queue: false,
+							showEffects: true,
+							isPlayerInput: false
+						})
+					}
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
+
+				if (
+					this.useTargetItem(hero, "item_orchid", bestTarget, selectedTemplate) ||
+					this.useTargetItem(hero, "item_bloodthorn", bestTarget, selectedTemplate)
+				) {
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+					return
+				}
 			}
 
 			const tornadoAbility = hero.GetAbilityByName("invoker_tornado")
@@ -1417,14 +2099,29 @@ new (class InvokerCombo {
 			const hasActiveLiftBuff = bestTarget.Buffs.some(
 				m =>
 					m.Name === "modifier_invoker_tornado" ||
-					m.Name === "modifier_euler_cyclone" ||
-					m.Name === "modifier_wind_waker_active"
+					m.Name === "modifier_eul_cyclone" ||
+					m.Name === "modifier_wind_waker"
 			)
 
-			if (!hasActiveLiftBuff && (!isTornadoReady || !this.comboSequenceGrid.IsEnabled("invoker_tornado"))) {
+			if (selectedTemplate === 1) {
+				// In Eul One-Shot template, Eul's / Wind Waker is the prioritized initiation
+				if (!hasActiveLiftBuff) {
+					if (
+						this.useTargetItem(hero, "item_cyclone", bestTarget, selectedTemplate) ||
+						this.useTargetItem(hero, "item_wind_waker", bestTarget, selectedTemplate)
+					) {
+						this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+						return
+					}
+				}
+			} else if (
+				selectedTemplate === 0 &&
+				!hasActiveLiftBuff &&
+				(!isTornadoReady || !this.comboSequenceGrid.IsEnabled("invoker_tornado"))
+			) {
 				if (
-					this.useTargetItem(hero, "item_cyclone", bestTarget) ||
-					this.useTargetItem(hero, "item_wind_waker", bestTarget)
+					this.useTargetItem(hero, "item_cyclone", bestTarget, selectedTemplate) ||
+					this.useTargetItem(hero, "item_wind_waker", bestTarget, selectedTemplate)
 				) {
 					this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
 					return
@@ -1435,15 +2132,59 @@ new (class InvokerCombo {
 		const liftBuff = bestTarget.Buffs.find(
 			m =>
 				m.Name === "modifier_invoker_tornado" ||
-				m.Name === "modifier_euler_cyclone" ||
-				m.Name === "modifier_wind_waker_active"
+				m.Name === "modifier_eul_cyclone" ||
+				m.Name === "modifier_wind_waker"
 		)
 
 		const invokeAbility = hero.GetAbilityByName("invoker_invoke")
 
-		for (const spellName of this.comboSequenceGrid.values) {
-			if (!this.comboSequenceGrid.IsEnabled(spellName)) {
+		let activeSequence: string[] = this.comboSequenceGrid.values
+
+		if (selectedTemplate === 1) {
+			// Eul One-Shot: Sun Strike, Chaos Meteor, Deafening Blast, Cold Snap
+			activeSequence = [
+				"invoker_sun_strike",
+				"invoker_chaos_meteor",
+				"invoker_deafening_blast",
+				"invoker_cold_snap"
+			]
+		} else if (selectedTemplate === 2) {
+			// Cold Snap + Urn: Forge Spirit, Cold Snap, Alacrity, Sun Strike, Ice Wall
+			activeSequence = [
+				"invoker_forge_spirit",
+				"invoker_cold_snap",
+				"invoker_alacrity",
+				"invoker_sun_strike",
+				"invoker_ice_wall"
+			]
+		} else if (selectedTemplate === 3) {
+			// Quas-Wex EMP: Tornado, EMP, Cold Snap
+			activeSequence = ["invoker_tornado", "invoker_emp", "invoker_cold_snap"]
+		} else if (selectedTemplate === 4) {
+			// Late Game: Full combo
+			activeSequence = [
+				"invoker_tornado",
+				"invoker_emp",
+				"invoker_chaos_meteor",
+				"invoker_sun_strike",
+				"invoker_deafening_blast",
+				"invoker_ice_wall",
+				"invoker_cold_snap"
+			]
+		}
+
+		for (const spellName of activeSequence) {
+			if (selectedTemplate === 0 && !this.comboSequenceGrid.IsEnabled(spellName)) {
 				continue
+			}
+
+			if (spellName === "invoker_forge_spirit") {
+				const hasLivingSpirit = EntityManager.GetEntitiesByClass(Unit).some(
+					u => u.Name === "npc_dota_invoker_forged_spirit" && u.IsAlive && u.IsControllable
+				)
+				if (hasLivingSpirit) {
+					continue
+				}
 			}
 
 			let ability = hero.GetAbilityByName(spellName)
@@ -1454,11 +2195,18 @@ new (class InvokerCombo {
 				continue
 			}
 
-			if (isTargetImmune && spellName !== "invoker_sun_strike") {
+			if (isTargetImmune && spellName !== "invoker_sun_strike" && spellName !== "invoker_sun_strike_ad") {
 				continue
 			}
 
 			if (ability.Cooldown > 0.1) {
+				continue
+			}
+
+			if (
+				(spellName === "invoker_sun_strike" || spellName === "invoker_sun_strike_ad") &&
+				GameState.RawGameTime - this.lastCataclysmCast < 1.5
+			) {
 				continue
 			}
 
@@ -1467,7 +2215,9 @@ new (class InvokerCombo {
 			}
 
 			let castRange = ability.CastRange > 0 ? ability.CastRange : 800
-			if (spellName === "invoker_ice_wall" && !this.isIceWallUpgraded(hero)) {
+			if (spellName === "invoker_sun_strike" || spellName === "invoker_sun_strike_ad") {
+				castRange = Infinity
+			} else if (spellName === "invoker_ice_wall" && !this.isIceWallUpgraded(hero)) {
 				castRange = 520
 			}
 			if (hero.Distance2D(bestTarget) > castRange) {
@@ -1484,13 +2234,9 @@ new (class InvokerCombo {
 					hero.Mana < invokeAbility.ManaCost
 				) {
 					let foundLaterSpell = false
-					for (
-						let i = this.comboSequenceGrid.values.indexOf(spellName) + 1;
-						i < this.comboSequenceGrid.values.length;
-						i++
-					) {
-						const laterName = this.comboSequenceGrid.values[i]
-						if (!this.comboSequenceGrid.IsEnabled(laterName)) {
+					for (let i = activeSequence.indexOf(spellName) + 1; i < activeSequence.length; i++) {
+						const laterName = activeSequence[i]
+						if (selectedTemplate === 0 && !this.comboSequenceGrid.IsEnabled(laterName)) {
 							continue
 						}
 						const laterAbil = hero.GetAbilityByName(laterName)
@@ -1502,7 +2248,7 @@ new (class InvokerCombo {
 							laterAbil.Cooldown <= 0.1 &&
 							hero.Mana >= laterAbil.ManaCost
 						) {
-							if (this.castInvokerSpell(hero, laterAbil, bestTarget, liftBuff)) {
+							if (this.castInvokerSpell(hero, laterAbil, bestTarget, liftBuff, selectedTemplate)) {
 								return
 							}
 							foundLaterSpell = true
@@ -1523,20 +2269,20 @@ new (class InvokerCombo {
 				continue
 			}
 
-			if (this.castInvokerSpell(hero, ability, bestTarget, liftBuff)) {
+			if (this.castInvokerSpell(hero, ability, bestTarget, liftBuff, selectedTemplate)) {
 				return
 			}
 		}
 
 		if (!isTargetImmune && hero.Distance2D(bestTarget) <= 900) {
-			if (this.useNoTargetItem(hero, "item_shivas_guard")) {
+			if (this.useNoTargetItem(hero, "item_shivas_guard", selectedTemplate)) {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
 				return
 			}
 		}
 
-		if (this.itemsSelector.IsEnabled("item_refresher")) {
-			const refresher = hero.Items.find(i => i.Name === "item_refresher")
+		if (this.isItemEnabledForCombo("item_refresher", selectedTemplate)) {
+			const refresher = this.getRefresherItem(hero, selectedTemplate)
 			if (refresher && refresher.IsValid && refresher.Cooldown <= 0.1 && hero.Mana >= refresher.ManaCost) {
 				const meteor = hero.GetAbilityByName("invoker_chaos_meteor")
 				const sunstrike = hero.GetAbilityByName("invoker_sun_strike")
@@ -1555,8 +2301,20 @@ new (class InvokerCombo {
 						showEffects: true,
 						isPlayerInput: false
 					})
+					claimOrder()
 					this.sleeper.Sleep(GameState.InputLag * 1000 + 150)
 					return
+				}
+			}
+		}
+
+		if (this.autoSwitchOrbs.value) {
+			const targetOrb = selectedTemplate === 3 ? "wex" : "exort"
+			const orbCount = hero.Buffs.filter(b => b.Name.startsWith(`modifier_invoker_${targetOrb}`)).length
+			if (orbCount < 3) {
+				const orbAbility = hero.GetAbilityByName(`invoker_${targetOrb}`)
+				if (orbAbility && orbAbility.Level > 0) {
+					this.switchOrbs(hero, targetOrb)
 				}
 			}
 		}
