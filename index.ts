@@ -1,3 +1,4 @@
+import "./coordination"
 import "./auto_ban"
 import "./rubick_combo"
 import "./last_hit"
@@ -51,6 +52,7 @@ new (class AutoBootsUtility {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("PrepareUnitOrders", this.PrepareUnitOrders.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -60,6 +62,10 @@ new (class AutoBootsUtility {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.phaseSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.phaseSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

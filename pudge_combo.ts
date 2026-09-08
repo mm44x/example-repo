@@ -241,6 +241,7 @@ new (class PudgeCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.OnDraw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 		EventsSDK.on("PrepareUnitOrders", this.onPrepareUnitOrders.bind(this))
 	}
 
@@ -249,9 +250,9 @@ new (class PudgeCombo {
 	private castingHookStartTime = 0
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.autoHookSleeper.Sleep(0)
-		this.rotSleeper.Sleep(0)
+		this.sleeper.ResetTimer()
+		this.autoHookSleeper.ResetTimer()
+		this.rotSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.lastPredictedHookPos = undefined
 		this.pendingAtosTarget = undefined
@@ -261,10 +262,6 @@ new (class PudgeCombo {
 		this.castingHookPos = undefined
 		this.castingHookStartTime = 0
 		this.pSDK.DestroyAll()
-
-		if (this.comboSequenceGrid) {
-			this.comboSequenceGrid.ResetToDefault()
-		}
 	}
 
 	private get hasLocalHero(): boolean {
@@ -1184,6 +1181,12 @@ new (class PudgeCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.autoHookSleeper.ResetTimer()
+			this.rotSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

@@ -12,7 +12,7 @@ import {
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 const THREAT_ABILITIES = [
 	"lion_voodoo",
@@ -193,6 +193,7 @@ new (class AutoDodgerUtility {
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 	}
 
 	private executeAndClaimOrder(castFn: () => void, delay: number): void {
@@ -270,10 +271,9 @@ new (class AutoDodgerUtility {
 
 	private getDangerAoEAnimations(target: Hero, allHeroes: Hero[]): { enemy: Hero; ability: Ability } | null {
 		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				for (const abil of spells) {
-					if (abil.IsInAbilityPhase) {
+			if (enemy && isRealHero(enemy) && enemy.IsEnemy(target)) {
+				for (const abil of enemy.Spells) {
+					if (abil && abil.IsInAbilityPhase) {
 						const aoe = AOE_THREATS.find(a => a.name === abil.Name)
 						if (aoe) {
 							if (enemy.Distance2D(target, true) <= aoe.radius + 50) {
@@ -289,10 +289,9 @@ new (class AutoDodgerUtility {
 
 	private getIncomingTargetedSpell(target: Hero, allHeroes: Hero[]): { enemy: Hero; ability: Ability } | null {
 		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				for (const abil of spells) {
-					if (abil.IsInAbilityPhase && TARGETED_REFLECT_SPELLS.includes(abil.Name)) {
+			if (enemy && isRealHero(enemy) && enemy.IsEnemy(target)) {
+				for (const abil of enemy.Spells) {
+					if (abil && abil.IsInAbilityPhase && TARGETED_REFLECT_SPELLS.includes(abil.Name)) {
 						if (enemy.Distance2D(target, true) <= (abil.CastRange || 800) + 150) {
 							return { enemy, ability: abil }
 						}
@@ -306,6 +305,10 @@ new (class AutoDodgerUtility {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.castSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.castSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

@@ -300,6 +300,7 @@ new (class ZeusCombo {
 		EventsSDK.on("UnitPortalChanged", this.onUnitPortalChanged.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero(): boolean {
@@ -307,11 +308,11 @@ new (class ZeusCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.ksSleeper.Sleep(0)
-		this.interrupterSleeper.Sleep(0)
-		this.autoQSleeper.Sleep(0)
-		this.autoJumpSleeper.Sleep(0)
+		this.sleeper.ResetTimer()
+		this.ksSleeper.ResetTimer()
+		this.interrupterSleeper.ResetTimer()
+		this.autoQSleeper.ResetTimer()
+		this.autoJumpSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.activeNimbusCastList = []
 		this.lastWrathCastTime = 0
@@ -494,6 +495,14 @@ new (class ZeusCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.ksSleeper.ResetTimer()
+			this.interrupterSleeper.ResetTimer()
+			this.autoQSleeper.ResetTimer()
+			this.autoJumpSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

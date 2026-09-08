@@ -263,6 +263,7 @@ new (class InvokerCombo {
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -673,8 +674,7 @@ new (class InvokerCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.sleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.pendingAutoSkill = null
 		this.autoSkillCursorPos = null
@@ -683,6 +683,10 @@ new (class InvokerCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero
@@ -715,21 +719,21 @@ new (class InvokerCombo {
 					continue
 				}
 
-				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+				const autoSkillInvoke = hero.GetAbilityByName("invoker_invoke")
 				const isActive = !ability.IsHidden
 				const modeAutoUse = config.mode.SelectedID === 0 // 0 = Auto Use, 1 = Only Craft
 
 				if (!isActive) {
 					// Need to invoke first
 					if (
-						!invokeAbility ||
-						!invokeAbility.IsValid ||
-						invokeAbility.Cooldown > 0.1 ||
-						hero.Mana < invokeAbility.ManaCost
+						!autoSkillInvoke ||
+						!autoSkillInvoke.IsValid ||
+						autoSkillInvoke.Cooldown > 0.1 ||
+						hero.Mana < autoSkillInvoke.ManaCost
 					) {
 						continue
 					}
-					if (this.invokeSpell(hero, spellName, invokeAbility)) {
+					if (this.invokeSpell(hero, spellName, autoSkillInvoke)) {
 						if (modeAutoUse) {
 							this.pendingAutoSkill = spellName
 							this.autoSkillCursorPos = InputManager.CursorOnWorld
@@ -811,28 +815,26 @@ new (class InvokerCombo {
 				}
 
 				// Point-targeted spell
-				{
-					if (spellName === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
-						const end = cursorPos.Extend(hero.Position, 600)
-						hero.CastVectorTargetPosition(ability, cursorPos, end)
-						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} as vector at cursor`)
-					} else {
-						ExecuteOrder.PrepareOrder({
-							orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
-							issuers: [hero],
-							position: cursorPos,
-							ability: ability.Index,
-							queue: false,
-							showEffects: true,
-							isPlayerInput: false
-						})
-						console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
-					}
-					this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
-					this.pendingAutoSkill = null
-					this.autoSkillCursorPos = null
-					return
+				if (spellName === "invoker_ice_wall" && this.isIceWallUpgraded(hero)) {
+					const end = cursorPos.Extend(hero.Position, 600)
+					hero.CastVectorTargetPosition(ability, cursorPos, end)
+					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} as vector at cursor`)
+				} else {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: cursorPos,
+						ability: ability.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					console.log(`[InvokerCombo] Auto Skill: Cast ${spellName} at cursor`)
 				}
+				this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
+				this.pendingAutoSkill = null
+				this.autoSkillCursorPos = null
+				return
 			}
 		} // end channeling/stunned check
 
@@ -982,12 +984,12 @@ new (class InvokerCombo {
 				if (disruptTarget) {
 					const useColdSnap = this.disruptSkills.IsEnabled("invoker_cold_snap")
 					const useTornado = this.disruptSkills.IsEnabled("invoker_tornado")
-					const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+					const disruptInvoke = hero.GetAbilityByName("invoker_invoke")
 					const canInvoke =
-						invokeAbility &&
-						invokeAbility.IsValid &&
-						invokeAbility.Cooldown <= 0.1 &&
-						hero.Mana >= invokeAbility.ManaCost
+						disruptInvoke &&
+						disruptInvoke.IsValid &&
+						disruptInvoke.Cooldown <= 0.1 &&
+						hero.Mana >= disruptInvoke.ManaCost
 					const coldSnapRange = 1000
 
 					let chosenSpell = ""
@@ -1002,7 +1004,7 @@ new (class InvokerCombo {
 								coldSnap.IsHidden &&
 								canInvoke &&
 								coldSnap.Cooldown <= 0.1 &&
-								hero.Mana >= coldSnap.ManaCost + invokeAbility.ManaCost
+								hero.Mana >= coldSnap.ManaCost + disruptInvoke.ManaCost
 							if (csActive || csInvokable) {
 								chosenSpell = "invoker_cold_snap"
 							}
@@ -1019,7 +1021,7 @@ new (class InvokerCombo {
 								tornado.IsHidden &&
 								canInvoke &&
 								tornado.Cooldown <= 0.1 &&
-								hero.Mana >= tornado.ManaCost + invokeAbility.ManaCost
+								hero.Mana >= tornado.ManaCost + disruptInvoke.ManaCost
 							const tornadoRange = tornado.CastRange > 0 ? tornado.CastRange : 2000
 							if ((tActive || tInvokable) && minDist <= tornadoRange) {
 								chosenSpell = "invoker_tornado"
@@ -1029,17 +1031,16 @@ new (class InvokerCombo {
 
 					if (chosenSpell !== "") {
 						const ability = hero.GetAbilityByName(chosenSpell)
-						const invokeAbility = hero.GetAbilityByName("invoker_invoke")
 						if (ability && ability.IsValid && ability.Level > 0) {
 							const isActive = !ability.IsHidden
 							if (!isActive) {
 								if (
-									invokeAbility &&
-									invokeAbility.IsValid &&
-									invokeAbility.Cooldown <= 0.1 &&
-									hero.Mana >= invokeAbility.ManaCost
+									disruptInvoke &&
+									disruptInvoke.IsValid &&
+									disruptInvoke.Cooldown <= 0.1 &&
+									hero.Mana >= disruptInvoke.ManaCost
 								) {
-									if (this.invokeSpell(hero, chosenSpell, invokeAbility)) {
+									if (this.invokeSpell(hero, chosenSpell, disruptInvoke)) {
 										console.log(
 											`[InvokerCombo] Auto Disrupt: Invoking ${chosenSpell} on ${disruptTarget.Name}`
 										)
@@ -1117,16 +1118,16 @@ new (class InvokerCombo {
 			if (!this.sunstrikeInvis.value && hero.IsInvisible) {
 				// skip invis check below
 			} else {
-				const invokeAbility = hero.GetAbilityByName("invoker_invoke")
+				const ssInvoke = hero.GetAbilityByName("invoker_invoke")
 				const sunstrike = hero.GetAbilityByName("invoker_sun_strike")
-				if (sunstrike && sunstrike.IsValid && sunstrike.Level > 0 && invokeAbility && invokeAbility.IsValid) {
+				if (sunstrike && sunstrike.IsValid && sunstrike.Level > 0 && ssInvoke && ssInvoke.IsValid) {
 					const ssActive = !sunstrike.IsHidden && sunstrike.Cooldown <= 0.1 && hero.Mana >= sunstrike.ManaCost
-					const canInvoke = invokeAbility.Cooldown <= 0.1 && hero.Mana >= invokeAbility.ManaCost
+					const canInvoke = ssInvoke.Cooldown <= 0.1 && hero.Mana >= ssInvoke.ManaCost
 					const ssInvokable =
 						sunstrike.IsHidden &&
 						canInvoke &&
 						sunstrike.Cooldown <= 0.1 &&
-						hero.Mana >= sunstrike.ManaCost + invokeAbility.ManaCost
+						hero.Mana >= sunstrike.ManaCost + ssInvoke.ManaCost
 
 					if (ssActive || ssInvokable) {
 						// --- Sunstrike on Stunned/Channeled ---
@@ -1239,7 +1240,7 @@ new (class InvokerCombo {
 									this.pendingSunstrikePos = null
 									return
 								} else if (ssInvokable) {
-									if (this.invokeSpell(hero, "invoker_sun_strike", invokeAbility)) {
+									if (this.invokeSpell(hero, "invoker_sun_strike", ssInvoke)) {
 										this.pendingSunstrikePos = castPos
 										console.log(`[InvokerCombo] Auto Sunstrike: Invoking for ${enemy.Name}`)
 										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
@@ -1299,7 +1300,7 @@ new (class InvokerCombo {
 									this.pendingSunstrikePos = null
 									return
 								} else if (ssInvokable) {
-									if (this.invokeSpell(hero, "invoker_sun_strike", invokeAbility)) {
+									if (this.invokeSpell(hero, "invoker_sun_strike", ssInvoke)) {
 										this.pendingSunstrikePos = predictedPos
 										console.log(`[InvokerCombo] Auto Sunstrike: Invoking for walking ${enemy.Name}`)
 										this.sleeper.Sleep(GameState.InputLag * 1000 + 100)

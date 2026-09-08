@@ -100,6 +100,7 @@ new (class LargoCombo {
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -320,14 +321,18 @@ new (class LargoCombo {
 	// ----------------------------------------------------------------
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.rhapsodySleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.sleeper.ResetTimer()
+		this.rhapsodySleeper.ResetTimer()
 	}
 
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.rhapsodySleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

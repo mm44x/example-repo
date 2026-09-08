@@ -141,6 +141,7 @@ new (class PuckCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero(): boolean {
@@ -148,7 +149,7 @@ new (class PuckCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
+		this.sleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.escapeOrbCastTime = 0
 		this.pSDK.DestroyAll()
@@ -195,6 +196,10 @@ new (class PuckCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

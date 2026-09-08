@@ -141,15 +141,15 @@ new (class VisageCombo {
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.familiarSleeper.Sleep(0)
-		this.summonSleeper.Sleep(0)
-		this.autoSoulSleeper.Sleep(0)
-		this.autoSaveSleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.sleeper.ResetTimer()
+		this.familiarSleeper.ResetTimer()
+		this.summonSleeper.ResetTimer()
+		this.autoSoulSleeper.ResetTimer()
+		this.autoSaveSleeper.ResetTimer()
 	}
 
 	private get hasLocalHero() {
@@ -528,6 +528,14 @@ new (class VisageCombo {
 			return
 		}
 
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.familiarSleeper.ResetTimer()
+			this.summonSleeper.ResetTimer()
+			this.autoSoulSleeper.ResetTimer()
+			this.autoSaveSleeper.ResetTimer()
+		}
+
 		const hero = LocalPlayer?.Hero
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
 			return
@@ -575,8 +583,8 @@ new (class VisageCombo {
 		// Auto Summon Familiars — cek apakah enabled di combo order grid
 		const summonEnabled = this.comboSequenceGrid.IsEnabled("visage_summon_familiars")
 		if (summonEnabled && !this.summonSleeper.Sleeping) {
-			const familiars = this.getControllableFamiliars()
-			if (familiars.length === 0) {
+			const aliveFamiliars = this.getControllableFamiliars()
+			if (aliveFamiliars.length === 0) {
 				const summonAbility = hero.GetAbilityByName("visage_summon_familiars")
 				if (
 					summonAbility &&

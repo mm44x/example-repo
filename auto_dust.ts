@@ -9,7 +9,7 @@ import {
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 new (class AutoDust {
 	private readonly entry = Menu.AddEntry("mm44x")
@@ -37,6 +37,7 @@ new (class AutoDust {
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -46,6 +47,10 @@ new (class AutoDust {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.dustSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.dustSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero
@@ -64,7 +69,7 @@ new (class AutoDust {
 			(!hero.IsInvisible || this.whileInvisible.value)
 
 		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
-			if (!enemy?.IsValid || !enemy.IsEnemy(hero) || enemy.IsIllusion) {
+			if (!enemy?.IsValid || !enemy.IsEnemy(hero) || !isRealHero(enemy)) {
 				continue
 			}
 

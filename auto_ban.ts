@@ -36,6 +36,8 @@ new (class AutoBanUtility {
 		EventsSDK.on("UnitAbilityDataUpdated", this.populateAndRefresh.bind(this))
 		EventsSDK.on("ServerInfo", this.populateAndRefresh.bind(this))
 		EventsSDK.on("GameStateChanged", this.syncNativeBans.bind(this))
+		EventsSDK.on("GameStarted", this.syncNativeBans.bind(this))
+		EventsSDK.on("GameEnded", this.syncNativeBans.bind(this))
 		EventsSDK.on("Draw", this.onDraw.bind(this))
 
 		this.enabled.OnValue(() => {

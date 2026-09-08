@@ -156,6 +156,7 @@ new (class TuskCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.OnDraw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -522,20 +523,21 @@ new (class TuskCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.pullSleeper.Sleep(0)
+		this.sleeper.ResetTimer()
+		this.pullSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.snowballStartTime = 0
 		this.pSDK.DestroyAll()
-
-		if (this.comboSequenceGrid) {
-			this.comboSequenceGrid.ResetToDefault()
-		}
 	}
 
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.pullSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

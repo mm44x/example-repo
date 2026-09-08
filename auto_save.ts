@@ -1,18 +1,16 @@
 import {
-	Ability,
 	EntityManager,
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
 	Hero,
-	Item,
 	LocalPlayer,
 	Menu,
 	ProjectileManager,
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 const FATAL_MODIFIERS = [
 	"modifier_legion_commander_duel",
@@ -306,10 +304,11 @@ new (class AutoSaveUtility {
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 	}
 
 	private getOrderedAllies(hero: Hero, allHeroes: Hero[]): Hero[] {
-		const allies = allHeroes.filter(h => h && h.IsValid && h.IsAlive && !h.IsIllusion && !h.IsEnemy(hero))
+		const allies = allHeroes.filter(h => h && isRealHero(h) && !h.IsEnemy(hero))
 
 		if (!this.teamSelector) {
 			this.teamSelector = this.teamFilterNode.AddImageSelector(
@@ -321,12 +320,17 @@ new (class AutoSaveUtility {
 			)
 		}
 
+		let dirty = false
 		for (const ally of allies) {
 			const name = ally.Name
 			if (!this.teamSelector.values.includes(name)) {
 				this.teamSelector.values.push(name)
 				this.teamSelector.enabledValues.set(name, true)
+				dirty = true
 			}
+		}
+		if (dirty) {
+			this.teamSelector.Update()
 		}
 
 		const allowed = allies.filter(ally => {
@@ -395,10 +399,8 @@ new (class AutoSaveUtility {
 		const enemyNearby = allHeroes.some(
 			h =>
 				h &&
-				h.IsValid &&
-				h.IsAlive &&
+				isRealHero(h) &&
 				h.IsEnemy(unit) &&
-				!h.IsIllusion &&
 				(unit.Distance2D(h, true) <= 1000 ||
 					(h.IsAttacking && h.Distance2D(unit, true) <= h.GetAttackRange(unit) + 200))
 		)
@@ -412,13 +414,7 @@ new (class AutoSaveUtility {
 					return false
 				}
 				const sb = EntityManager.GetEntitiesByClass(Hero).find(
-					h =>
-						h &&
-						h.IsValid &&
-						h.IsAlive &&
-						h.IsEnemy(target) &&
-						h.Name === "npc_dota_hero_spirit_breaker" &&
-						!h.IsIllusion
+					h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_spirit_breaker"
 				)
 				if (sb && sb.Distance2D(target, true) > 1000) {
 					return false
@@ -440,13 +436,10 @@ new (class AutoSaveUtility {
 		}
 
 		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				const items = enemy.HasInventory ? enemy.Items.filter((i): i is Item => i !== undefined) : []
-				const abilities = [...spells, ...items]
-
-				for (const abil of abilities) {
+			if (enemy && isRealHero(enemy) && enemy.IsEnemy(target)) {
+				for (const abil of enemy.Spells) {
 					if (
+						abil &&
 						abil.IsInAbilityPhase &&
 						(THREAT_ABILITIES.includes(abil.Name) || THREAT_ITEMS.includes(abil.Name))
 					) {
@@ -457,6 +450,23 @@ new (class AutoSaveUtility {
 							}
 							if (enemy.Distance2D(target, true) <= castRange + 150) {
 								return true
+							}
+						}
+					}
+				}
+
+				if (enemy.HasInventory) {
+					for (const item of enemy.Items) {
+						if (
+							item &&
+							item.IsInAbilityPhase &&
+							(THREAT_ABILITIES.includes(item.Name) || THREAT_ITEMS.includes(item.Name))
+						) {
+							if (enemy.FindRotationAngle(target) < 0.25) {
+								const castRange = item.CastRange > 0 ? item.CastRange : 600
+								if (enemy.Distance2D(target, true) <= castRange + 150) {
+									return true
+								}
 							}
 						}
 					}
@@ -477,12 +487,11 @@ new (class AutoSaveUtility {
 		}
 
 		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				const items = enemy.HasInventory ? enemy.Items.filter((i): i is Item => i !== undefined) : []
-				const abilities = [...spells, ...items]
-
-				for (const abil of abilities) {
+			if (enemy && isRealHero(enemy) && enemy.IsEnemy(target)) {
+				for (const abil of enemy.Spells) {
+					if (!abil) {
+						continue
+					}
 					if (abil.IsInAbilityPhase && REFLECTABLE_SPELLS.includes(abil.Name)) {
 						if (enemy.FindRotationAngle(target) < 0.25) {
 							let castRange = abil.CastRange > 0 ? abil.CastRange : 600
@@ -496,13 +505,40 @@ new (class AutoSaveUtility {
 					}
 
 					if (this.lotusPredictInstant.value && INSTANT_REFLECTABLE_SPELLS.includes(abil.Name)) {
-						const isReady =
-							(abil.Level > 0 || abil instanceof Item) && abil.Cooldown <= 0.1 && enemy.IsManaEnough(abil)
+						const isReady = abil.Level > 0 && abil.Cooldown <= 0.1 && enemy.IsManaEnough(abil)
 						if (isReady) {
 							if (enemy.FindRotationAngle(target) < 0.15) {
 								const castRange = abil.CastRange > 0 ? abil.CastRange : 600
 								if (enemy.Distance2D(target, true) <= castRange + 50) {
 									return true
+								}
+							}
+						}
+					}
+				}
+
+				if (enemy.HasInventory) {
+					for (const item of enemy.Items) {
+						if (!item) {
+							continue
+						}
+						if (item.IsInAbilityPhase && REFLECTABLE_SPELLS.includes(item.Name)) {
+							if (enemy.FindRotationAngle(target) < 0.25) {
+								const castRange = item.CastRange > 0 ? item.CastRange : 600
+								if (enemy.Distance2D(target, true) <= castRange + 150) {
+									return true
+								}
+							}
+						}
+
+						if (this.lotusPredictInstant.value && INSTANT_REFLECTABLE_SPELLS.includes(item.Name)) {
+							const isReady = item.Cooldown <= 0.1 && enemy.IsManaEnough(item)
+							if (isReady) {
+								if (enemy.FindRotationAngle(target) < 0.15) {
+									const castRange = item.CastRange > 0 ? item.CastRange : 600
+									if (enemy.Distance2D(target, true) <= castRange + 50) {
+										return true
+									}
 								}
 							}
 						}
@@ -529,17 +565,26 @@ new (class AutoSaveUtility {
 		}
 
 		for (const enemy of allHeroes) {
-			if (enemy && enemy.IsValid && enemy.IsAlive && enemy.IsEnemy(target) && !enemy.IsIllusion) {
-				const spells = enemy.Spells.filter((s): s is Ability => s !== undefined)
-				const items = enemy.HasInventory ? enemy.Items.filter((i): i is Item => i !== undefined) : []
-				const abilities = [...spells, ...items]
-
-				for (const abil of abilities) {
-					if (abil.IsInAbilityPhase && MAGIC_THREAT_ABILITIES.includes(abil.Name)) {
+			if (enemy && isRealHero(enemy) && enemy.IsEnemy(target)) {
+				for (const abil of enemy.Spells) {
+					if (abil && abil.IsInAbilityPhase && MAGIC_THREAT_ABILITIES.includes(abil.Name)) {
 						if (enemy.FindRotationAngle(target) < 0.25) {
 							const castRange = abil.CastRange > 0 ? abil.CastRange : 600
 							if (enemy.Distance2D(target, true) <= castRange + 150) {
 								return true
+							}
+						}
+					}
+				}
+
+				if (enemy.HasInventory) {
+					for (const item of enemy.Items) {
+						if (item && item.IsInAbilityPhase && MAGIC_THREAT_ABILITIES.includes(item.Name)) {
+							if (enemy.FindRotationAngle(target) < 0.25) {
+								const castRange = item.CastRange > 0 ? item.CastRange : 600
+								if (enemy.Distance2D(target, true) <= castRange + 150) {
+									return true
+								}
 							}
 						}
 					}
@@ -552,54 +597,33 @@ new (class AutoSaveUtility {
 
 	private getEnemyCasterOfThreat(target: Hero, allHeroes: Hero[]): Hero | undefined {
 		const LC = allHeroes.find(
-			h =>
-				h &&
-				h.IsValid &&
-				h.IsAlive &&
-				h.IsEnemy(target) &&
-				h.Name === "npc_dota_hero_legion_commander" &&
-				!h.IsIllusion
+			h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_legion_commander"
 		)
 		if (target.HasBuffByName("modifier_legion_commander_duel") && LC) {
 			return LC
 		}
 
 		const Necro = allHeroes.find(
-			h =>
-				h &&
-				h.IsValid &&
-				h.IsAlive &&
-				h.IsEnemy(target) &&
-				h.Name === "npc_dota_hero_necrolyte" &&
-				!h.IsIllusion
+			h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_necrolyte"
 		)
 		if (target.HasBuffByName("modifier_necrolyte_reapers_scythe") && Necro) {
 			return Necro
 		}
 
-		const Bane = allHeroes.find(
-			h => h && h.IsValid && h.IsAlive && h.IsEnemy(target) && h.Name === "npc_dota_hero_bane" && !h.IsIllusion
-		)
+		const Bane = allHeroes.find(h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_bane")
 		if (target.HasBuffByName("modifier_bane_fiends_grip") && Bane) {
 			return Bane
 		}
 
 		const Batrider = allHeroes.find(
-			h =>
-				h && h.IsValid && h.IsAlive && h.IsEnemy(target) && h.Name === "npc_dota_hero_batrider" && !h.IsIllusion
+			h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_batrider"
 		)
 		if (target.HasBuffByName("modifier_batrider_flaming_lasso") && Batrider) {
 			return Batrider
 		}
 
 		const SS = allHeroes.find(
-			h =>
-				h &&
-				h.IsValid &&
-				h.IsAlive &&
-				h.IsEnemy(target) &&
-				h.Name === "npc_dota_hero_shadow_shaman" &&
-				!h.IsIllusion
+			h => h && isRealHero(h) && h.IsEnemy(target) && h.Name === "npc_dota_hero_shadow_shaman"
 		)
 		if (
 			(target.HasBuffByName("modifier_shadow_shaman_shackles") ||
@@ -647,6 +671,10 @@ new (class AutoSaveUtility {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.castSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.castSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero
@@ -1432,6 +1460,7 @@ new (class AutoSaveUtility {
 		if (this.teamSelector) {
 			this.teamSelector.values = []
 			this.teamSelector.enabledValues.clear()
+			this.teamSelector.Update()
 		}
 	}
 })()

@@ -166,6 +166,7 @@ new (class TinkerCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -173,17 +174,16 @@ new (class TinkerCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.blinkSleeper.Sleep(0)
-		this.spamMarchSleeper.Sleep(0)
-		this.autoFarmSleeper.Sleep(0)
+		this.sleeper.ResetTimer()
+		this.blinkSleeper.ResetTimer()
+		this.spamMarchSleeper.ResetTimer()
+		this.autoFarmSleeper.ResetTimer()
 		this.isAutoFarming = false
 		this.farmKeyWasPressed = false
 		this.farmLoopState = "idle"
 		this.pendingBottleAfterRearm = false
-		this.rearmModifierSleeper.Sleep(0)
-		this.bottleFountainSleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.rearmModifierSleeper.ResetTimer()
+		this.bottleFountainSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.pSDK.DestroyByKey("tinker_target_ring")
 		debugSpellInfo.length = 0
@@ -1156,6 +1156,15 @@ new (class TinkerCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.blinkSleeper.ResetTimer()
+			this.spamMarchSleeper.ResetTimer()
+			this.autoFarmSleeper.ResetTimer()
+			this.rearmModifierSleeper.ResetTimer()
+			this.bottleFountainSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer!.Hero!

@@ -18,7 +18,7 @@ import {
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 interface SpellConfig {
 	name: string
@@ -140,7 +140,7 @@ new (class AntiInitiationUtility {
 		true,
 		"Instantly disable enemy casting Call, Black Hole, RP, Ravage, etc."
 	)
-	private readonly antiInitDebug = this.antiInitiationNode.AddToggle("Draw Debug Overlay", true)
+	private readonly antiInitDebug = this.antiInitiationNode.AddToggle("Draw Debug Overlay", false)
 	private readonly priorityType = this.antiInitiationNode.AddDropdown(
 		"Priority Type",
 		["Items First", "Spells First"],
@@ -200,6 +200,7 @@ new (class AntiInitiationUtility {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 	}
 
 	private get hasLocalHero(): boolean {
@@ -211,6 +212,10 @@ new (class AntiInitiationUtility {
 			return
 		}
 
+		if (this.antiInitSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.antiInitSleeper.ResetTimer()
+		}
+
 		const hero = LocalPlayer?.Hero
 		if (hero === undefined || !hero.IsValid || !hero.IsAlive) {
 			return
@@ -219,7 +224,7 @@ new (class AntiInitiationUtility {
 		// Anti-Initiation state tracking and casting
 		const allHeroes = EntityManager.GetEntitiesByClass(Hero)
 		for (const heroEntity of allHeroes) {
-			if (heroEntity && heroEntity.IsValid && heroEntity.IsEnemy(hero) && !heroEntity.IsIllusion) {
+			if (heroEntity && heroEntity.IsValid && heroEntity.IsEnemy(hero) && isRealHero(heroEntity)) {
 				if (heroEntity.IsVisible && heroEntity.IsAlive) {
 					if (
 						this.antiInitEnabled.value &&
@@ -765,7 +770,7 @@ new (class AntiInitiationUtility {
 		const textH = RendererSDK.DefaultTextSize
 
 		const enemies = EntityManager.GetEntitiesByClass(Hero).filter(
-			h => h && h.IsValid && h.IsEnemy(hero) && !h.IsIllusion && h.IsVisible && h.IsAlive
+			h => h && h.IsValid && h.IsEnemy(hero) && isRealHero(h) && h.IsVisible && h.IsAlive
 		)
 
 		const lines: { text: string; color: Color }[] = [

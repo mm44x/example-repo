@@ -20,7 +20,7 @@ import {
 	Unit
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 const lastHitSleeper = new TickSleeper()
 
@@ -106,10 +106,11 @@ class CustomLastHit {
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private onGameEnded(): void {
-		lastHitSleeper.Sleep(0)
+		lastHitSleeper.ResetTimer()
 		lastAttackTargetIdx = -1
 		lastAttackOrderTime = 0
 		lastDeAggroTime = 0
@@ -171,7 +172,7 @@ class CustomLastHit {
 				!enemy.IsAlive ||
 				!enemy.IsVisible ||
 				!enemy.IsEnemy(hero) ||
-				enemy.IsIllusion ||
+				!isRealHero(enemy) ||
 				enemy.IsDisarmed
 			) {
 				continue
@@ -250,6 +251,10 @@ class CustomLastHit {
 				unit.IsDisarmed ||
 				!unit.IsEnemy(creep)
 			) {
+				continue
+			}
+
+			if (unit.Distance2D(creep) > 900) {
 				continue
 			}
 
@@ -463,6 +468,10 @@ class CustomLastHit {
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
 			this.pSDK.DestroyByKey("hero_attack_range")
 			return
+		}
+
+		if (lastHitSleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			lastHitSleeper.ResetTimer()
 		}
 
 		// Always update the attack range visual
@@ -799,7 +808,7 @@ class CustomLastHit {
 
 				const heroes = EntityManager.GetEntitiesByClass(Hero)
 				for (const enemy of heroes) {
-					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
+					if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && isRealHero(enemy)) {
 						const dist = hero.Distance2D(enemy)
 						if (dist <= this.harassSearchRadius.value && dist < minDist) {
 							minDist = dist

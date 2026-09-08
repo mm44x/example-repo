@@ -20,7 +20,7 @@ import {
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
-import { claimOrder } from "./coordination"
+import { claimOrder, isRealHero } from "./coordination"
 
 const DEADLY_DOT_MODIFIERS = [
 	"modifier_ice_blast",
@@ -128,7 +128,7 @@ class SmartArmletAbuse {
 
 	private readonly debugDraw = this.entry.AddToggle(
 		"Draw Debug Info",
-		true,
+		false,
 		"Display real-time Armlet status overlay",
 		3
 	)
@@ -136,11 +136,14 @@ class SmartArmletAbuse {
 	private readonly sleeper = new TickSleeper()
 	private isWaitingForOff = false
 	private lastToggleTime = 0
+	private cachedIsThreat = false
+	private cachedIsDotActive = false
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.GameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.GameEnded.bind(this))
 
 		this.toggleKey.OnPressed(() => {
 			this.enabled.value = !this.enabled.value
@@ -162,6 +165,10 @@ class SmartArmletAbuse {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || !this.enabled.value || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero
@@ -233,7 +240,9 @@ class SmartArmletAbuse {
 		}
 
 		// 3. Safety Checks (DoT, Tracking Projectiles, Skillshots, Attack Animations)
-		if (this.isThreatPresent(hero)) {
+		this.cachedIsDotActive = DEADLY_DOT_MODIFIERS.some(mod => hero.HasBuffByName(mod))
+		this.cachedIsThreat = this.isThreatPresent(hero)
+		if (this.cachedIsThreat) {
 			return
 		}
 
@@ -253,9 +262,7 @@ class SmartArmletAbuse {
 
 	private isEnemyNear(hero: Hero, radius: number): boolean {
 		const enemies = EntityManager.GetEntitiesByClass(Hero)
-		return enemies.some(
-			e => e && e.IsValid && e.IsAlive && e.IsEnemy(hero) && !e.IsIllusion && hero.Distance2D(e, true) <= radius
-		)
+		return enemies.some(e => e && isRealHero(e) && e.IsEnemy(hero) && hero.Distance2D(e, true) <= radius)
 	}
 
 	private isThreatPresent(hero: Hero): boolean {
@@ -328,7 +335,7 @@ class SmartArmletAbuse {
 		// 4. Check Enemy Attack Animations (Heroes)
 		if (this.checkAnimations.value) {
 			const enemyHeroes = EntityManager.GetEntitiesByClass(Hero).filter(
-				u => u.IsValid && u.IsAlive && u.IsEnemy(hero) && u.IsVisible && !u.IsIllusion
+				u => u && isRealHero(u) && u.IsEnemy(hero) && u.IsVisible
 			)
 			for (const enemy of enemyHeroes) {
 				if (enemy.Target?.Index !== hero.Index && enemy.Distance2D(hero) > enemy.GetAttackRange(hero) + 150) {
@@ -403,8 +410,8 @@ class SmartArmletAbuse {
 		const textH = RendererSDK.DefaultTextSize
 
 		const hasUnholyStrength = hero.Buffs.some(buff => buff.Name === "modifier_item_armlet_unholy_strength")
-		const isDotActive = DEADLY_DOT_MODIFIERS.some(mod => hero.HasBuffByName(mod))
-		const isThreat = this.isThreatPresent(hero)
+		const isDotActive = this.cachedIsDotActive
+		const isThreat = this.cachedIsThreat
 
 		const lines = [
 			`[Smart Armlet Abuse] ${this.enabled.value ? "ACTIVE" : "DISABLED"} (${
@@ -458,6 +465,8 @@ class SmartArmletAbuse {
 		this.sleeper.ResetTimer()
 		this.isWaitingForOff = false
 		this.lastToggleTime = 0
+		this.cachedIsThreat = false
+		this.cachedIsDotActive = false
 	}
 }
 

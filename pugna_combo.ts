@@ -98,6 +98,7 @@ new (class PugnaCombo {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.Draw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -105,12 +106,11 @@ new (class PugnaCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.blinkSleeper.Sleep(0)
-		this.spamBlastSleeper.Sleep(0)
-		this.healAllySleeper.Sleep(0)
-		this.lifeDrainSleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.sleeper.ResetTimer()
+		this.blinkSleeper.ResetTimer()
+		this.spamBlastSleeper.ResetTimer()
+		this.healAllySleeper.ResetTimer()
+		this.lifeDrainSleeper.ResetTimer()
 	}
 
 	// --- Cast helpers ---
@@ -498,6 +498,14 @@ new (class PugnaCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.blinkSleeper.ResetTimer()
+			this.spamBlastSleeper.ResetTimer()
+			this.healAllySleeper.ResetTimer()
+			this.lifeDrainSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer!.Hero!

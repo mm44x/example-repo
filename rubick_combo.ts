@@ -196,11 +196,12 @@ new (class RubickCombo {
 		InputEventSDK.on("MouseKeyUp", this.OnMouseKeyUp.bind(this))
 		EventsSDK.on("Draw", this.OnDraw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.stealSleeper.Sleep(0)
+		this.sleeper.ResetTimer()
+		this.stealSleeper.ResetTimer()
 		this.isDraggingHud = false
 		this.dragSpellName = undefined
 		this.firstFrameCleanup = true
@@ -216,9 +217,6 @@ new (class RubickCombo {
 			this.autoCastGrid.enabledValues.clear()
 			this.autoCastGrid.values.length = 0
 			this.autoCastGrid.Update()
-		}
-		if (this.comboSequenceGrid) {
-			this.comboSequenceGrid.ResetToDefault()
 		}
 	}
 
@@ -1184,6 +1182,11 @@ new (class RubickCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
+			this.stealSleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero

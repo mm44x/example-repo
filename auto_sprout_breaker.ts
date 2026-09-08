@@ -101,6 +101,7 @@ new (class AutoSproutBreaker {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("PrepareUnitOrders", this.onPrepareUnitOrders.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero(): boolean {
@@ -108,7 +109,7 @@ new (class AutoSproutBreaker {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
+		this.sleeper.ResetTimer()
 		this.lastMoveTargetPos = undefined
 		this.lastMoveOrderTime = 0
 		this.pendingWalkOutPos = undefined
@@ -173,6 +174,10 @@ new (class AutoSproutBreaker {
 				showEffects: true,
 				isPlayerInput: false
 			})
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
 		}
 
 		if (this.sleeper.Sleeping || hero.IsStunned || hero.IsHexed || hero.IsChanneling) {

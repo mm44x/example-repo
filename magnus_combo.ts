@@ -95,6 +95,7 @@ new (class MagnusCombo {
 
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
+		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
 
 	private get hasLocalHero() {
@@ -107,8 +108,7 @@ new (class MagnusCombo {
 	}
 
 	private onGameEnded(): void {
-		this.sleeper.Sleep(0)
-		this.comboSequenceGrid = null
+		this.sleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.lastComboTime = 0
 		this.currentSetup = undefined
@@ -118,6 +118,10 @@ new (class MagnusCombo {
 	private PostDataUpdate(delta: number): void {
 		if (delta === 0 || !this.hasLocalHero || ExecuteOrder.DisableHumanizer) {
 			return
+		}
+
+		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
+			this.sleeper.ResetTimer()
 		}
 
 		const hero = LocalPlayer?.Hero
