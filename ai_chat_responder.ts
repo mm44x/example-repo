@@ -186,6 +186,8 @@ class AIChatResponder {
 	private pendingTestTrigger = false
 	private pendingDispatchPayload: any = null
 	private readonly hudLogs: string[] = ["AI Chat Responder initialized..."]
+	private netMsgCount = 0
+	private lastNetMsgStr = "Waiting for packets..."
 
 	constructor() {
 		this.initPersistentInputs()
@@ -249,6 +251,7 @@ class AIChatResponder {
 	private registerEvents(): void {
 		Events.on("ServerMessage", this.onServerMessage.bind(this))
 		EventsSDK.on("GameEvent", this.onGameEvent.bind(this))
+		Events.on("CustomGameEvent", this.onCustomGameEvent.bind(this))
 		EventsSDK.on("ParticleCreated", this.onParticleCreated.bind(this))
 		EventsSDK.on("PostDataUpdate", this.onPostDataUpdate.bind(this))
 		EventsSDK.on("Draw", this.onDraw.bind(this))
@@ -331,11 +334,16 @@ class AIChatResponder {
 	// =========================================================================
 
 	private onServerMessage(msgID: number, buf: ArrayBuffer): void {
+		this.netMsgCount++
+		if (msgID !== 4 && msgID !== 55 && msgID !== 488 && msgID !== 489 && msgID !== 521 && msgID !== 522) {
+			this.lastNetMsgStr = `ID ${msgID} (${buf.byteLength}b)`
+		}
+
 		if (!this.enabled.value) {
 			return
 		}
 
-		// 612 = DOTA_UM_ChatMessage (Dota 2 player chat in Source 2)
+		// 1. DOTA_UM_ChatMessage (ID 612)
 		if (msgID === 612) {
 			let text = ""
 			let playerId = -1
@@ -369,24 +377,108 @@ class AIChatResponder {
 				if (playerId < 0) {
 					playerId = LocalPlayer?.PlayerID ?? 0
 				}
-				// channel_type 12 (DOTAChannelType_GameAllies) or 4 (DOTAChannelType_Team) is team chat
 				const isTeamOnly = channelType === 12 || channelType === 4
+				this.logHUD(`[Net 612] "${text}"`)
 				this.handleIncomingChat(text, playerId, isTeamOnly)
+				return
 			}
 		} else if (msgID === 490) {
-			// 490 = DOTA_UM_BotChat
+			// 2. DOTA_UM_BotChat (ID 490)
 			try {
 				const msg = ParseProtobufNamed(new Uint8Array(buf), "CDOTAUserMsg_BotChat")
 				const text = (msg.get("message") as string | undefined) ?? ""
 				const playerId = (msg.get("player_id") as number | undefined) ?? -1
 				const isTeamOnly = Boolean(msg.get("team_only"))
 				if (text.length > 0) {
+					this.logHUD(`[Bot 490] "${text}"`)
 					this.handleIncomingChat(text, playerId < 0 ? LocalPlayer?.PlayerID ?? 0 : playerId, isTeamOnly)
+					return
 				}
 			} catch {
 				// ignore
 			}
 		}
+
+		// 3. Generic scanner for any other non-engine message ID that might carry chat
+		if (
+			msgID !== 4 &&
+			msgID !== 40 &&
+			msgID !== 41 &&
+			msgID !== 45 &&
+			msgID !== 51 &&
+			msgID !== 55 &&
+			msgID !== 145 &&
+			msgID !== 208 &&
+			msgID !== 488 &&
+			msgID !== 489 &&
+			msgID !== 521 &&
+			msgID !== 522
+		) {
+			const found = this.findReadableString(buf)
+			if (
+				found &&
+				found.length >= 2 &&
+				!found.startsWith("npc_dota_") &&
+				!found.startsWith("models/") &&
+				!found.startsWith("particles/")
+			) {
+				this.logHUD(`[Net ${msgID}] "${found}"`)
+				this.handleIncomingChat(found, LocalPlayer?.PlayerID ?? 0, true)
+			}
+		}
+	}
+
+	private findReadableString(buf: ArrayBuffer): string | null {
+		try {
+			const bytes = new Uint8Array(buf)
+			let offset = 0
+			while (offset < bytes.length) {
+				let tag = 0
+				let shift = 0
+				while (offset < bytes.length) {
+					const b = bytes[offset++]
+					tag |= (b & 0x7f) << shift
+					if ((b & 0x80) === 0) {
+						break
+					}
+					shift += 7
+				}
+				const wireType = tag & 7
+				if (wireType === 0) {
+					while (offset < bytes.length && (bytes[offset++] & 0x80) !== 0) {
+						// skip varint
+					}
+				} else if (wireType === 2) {
+					let len = 0
+					shift = 0
+					while (offset < bytes.length) {
+						const b = bytes[offset++]
+						len |= (b & 0x7f) << shift
+						if ((b & 0x80) === 0) {
+							break
+						}
+						shift += 7
+					}
+					if (len >= 2 && len < 300 && offset + len <= bytes.length) {
+						const stream = new ViewBinaryStream(new DataView(bytes.buffer, bytes.byteOffset + offset, len))
+						const s = stream.ReadUtf8String(len)
+						if (s && s.length >= 2 && /^[\x20-\x7E\u00A0-\uFFFF]+$/.test(s)) {
+							return s
+						}
+					}
+					offset += len
+				} else if (wireType === 1) {
+					offset += 8
+				} else if (wireType === 5) {
+					offset += 4
+				} else {
+					break
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return null
 	}
 
 	private parseChatMessageFallback(buf: ArrayBuffer): { text: string; playerId: number; channelType: number } | null {
@@ -471,12 +563,29 @@ class AIChatResponder {
 		if (!this.enabled.value) {
 			return
 		}
-		if (eventName === "player_chat") {
-			const text = typeof obj.text === "string" ? obj.text : ""
-			const playerId = typeof obj.playerid === "number" ? obj.playerid : LocalPlayer?.PlayerID ?? 0
-			const isTeamOnly = Boolean(obj.teamonly)
+		if (obj && typeof obj === "object") {
+			const text = typeof obj.text === "string" ? obj.text : typeof obj.message === "string" ? obj.message : ""
 			if (text.length > 0) {
+				const playerId = typeof obj.playerid === "number" ? obj.playerid : LocalPlayer?.PlayerID ?? 0
+				const isTeamOnly = Boolean(obj.teamonly)
+				this.logHUD(`[GameEvent ${eventName}] "${text}"`)
 				this.handleIncomingChat(text, playerId, isTeamOnly)
+			}
+		}
+	}
+
+	private onCustomGameEvent(eventName: string, data: any): void {
+		if (!this.enabled.value) {
+			return
+		}
+		if (data && typeof data === "object") {
+			for (const key of Object.keys(data)) {
+				const val = data[key]
+				if (typeof val === "string" && val.length > 0 && val.length < 200) {
+					this.logHUD(`[CustomEvent ${eventName}] "${val}"`)
+					this.handleIncomingChat(val, LocalPlayer?.PlayerID ?? 0, false)
+					return
+				}
 			}
 		}
 	}
@@ -1037,10 +1146,10 @@ class AIChatResponder {
 
 		const startX = 25
 		let startY = 180
-		const width = 450
-		const height = 180
+		const width = 480
+		const height = 220
 
-		RendererSDK.FilledRect(new Vector2(startX - 5, startY - 5), new Vector2(width, height), Color.Black.SetA(200))
+		RendererSDK.FilledRect(new Vector2(startX - 5, startY - 5), new Vector2(width, height), Color.Black.SetA(210))
 
 		RendererSDK.Text(
 			"AI Chat Responder — Live Debugger",
@@ -1057,12 +1166,22 @@ class AIChatResponder {
 		startY += 18
 
 		RendererSDK.Text(
-			`Outbox Queue: ${this.outboxQueue.length} msg(s)`,
+			`Packets: ${this.netMsgCount} msgs | ${this.lastNetMsgStr}`,
 			new Vector2(startX, startY),
 			Color.Yellow,
 			"Roboto",
-			12,
-			600
+			11,
+			500
+		)
+		startY += 16
+
+		RendererSDK.Text(
+			`Outbox Queue: ${this.outboxQueue.length} msg(s) | ReplySelf: ${this.replySelf.value ? "ON" : "OFF"}`,
+			new Vector2(startX, startY),
+			new Color(255, 200, 100),
+			"Roboto",
+			11,
+			500
 		)
 		startY += 18
 
