@@ -101,8 +101,7 @@ class AIChatResponder {
 	private readonly modelInput = this.node.AddTextInput("Model", DEFAULT_MODEL)
 	private readonly promptInput = this.node.AddTextInput(
 		"Custom Prompt (Optional)",
-		"",
-		"Leave empty to use built-in AI gamer persona, or enter custom instructions"
+		"leave empty for default"
 	)
 
 	// Buttons
@@ -190,11 +189,7 @@ class AIChatResponder {
 				set: (val: any) => {
 					if (typeof val === "string") {
 						// Filter out old multi-line prompt if cached in settings
-						if (val.includes("You are an AI") || val.length > 200) {
-							input.text = ""
-						} else {
-							input.text = val
-						}
+						input.text = val.includes("You are an AI") || val.length > 200 ? "" : val
 					}
 				},
 				configurable: true
