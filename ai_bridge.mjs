@@ -24,13 +24,32 @@ const REQUEST_FILE = path.join(__dirname, "ai_bridge_request.json")
 const RESPONSE_FILE = path.join(__dirname, "ai_bridge_response.json")
 const CONFIG_FILE = path.join(__dirname, "ai_bridge_config.json")
 
-// Candidate Dota 2 console log paths
-const CANDIDATE_CONSOLE_LOGS = [
-	"D:/SteamLibrary/steamapps/common/dota 2 beta/game/dota/console.log",
-	"D:/SteamLibrary/steamapps/common/dota 2 beta/game/dota/console_ai.log",
-	"C:/Program Files (x86)/Steam/steamapps/common/dota 2 beta/game/dota/console.log",
-	"C:/Program Files (x86)/Steam/steamapps/common/dota 2 beta/game/dota/console_ai.log"
-]
+function getCandidateConsoleLogs() {
+	const paths = [
+		"D:/SteamLibrary/steamapps/common/dota 2 beta/game/dota/console.log",
+		"D:/SteamLibrary/steamapps/common/dota 2 beta/game/dota/console_ai.log",
+		"C:/Program Files (x86)/Steam/steamapps/common/dota 2 beta/game/dota/console.log",
+		"C:/Program Files (x86)/Steam/steamapps/common/dota 2 beta/game/dota/console_ai.log"
+	]
+	const drives = ["C", "D", "E", "F", "G", "H"]
+	const subdirs = [
+		"SteamLibrary/steamapps/common/dota 2 beta/game/dota",
+		"Program Files (x86)/Steam/steamapps/common/dota 2 beta/game/dota",
+		"Program Files/Steam/steamapps/common/dota 2 beta/game/dota",
+		"Steam/steamapps/common/dota 2 beta/game/dota",
+		"Games/Steam/steamapps/common/dota 2 beta/game/dota"
+	]
+	for (const drive of drives) {
+		for (const sub of subdirs) {
+			paths.push(`${drive}:/${sub}/console.log`)
+			paths.push(`${drive}:/${sub}/console_ai.log`)
+		}
+	}
+	return [...new Set(paths)]
+}
+
+// Candidate Dota 2 console log paths (auto-scanned across drives)
+const CANDIDATE_CONSOLE_LOGS = getCandidateConsoleLogs()
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI playing Dota 2, talking to other players in the game chat while you play. Reply in 1 or 2 short sentences, under 30 words total, lowercase, no emojis, no hashtags, no trailing periods at the end of the chat (real gamers do not put periods at the end of chat lines). Tone: calm, friendly, casual gamer, a little dry. Sound like a normal person playing Dota on PC. You may use common gaming shorthands (e.g. u, ur, ty, thx, gl, glhf, mb, np, sec, idk, lol, gg, wkwk) naturally when fitting.
 
