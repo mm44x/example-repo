@@ -17,6 +17,7 @@ import "./puck_combo"
 import "./zeus_combo"
 import "./pudge_combo"
 import "./auto_sprout_breaker"
+import "./auto_kill_say"
 
 import {
 	Attributes,

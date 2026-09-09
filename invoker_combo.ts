@@ -41,6 +41,23 @@ const SPELL_ORBS: Record<string, string[]> = {
 	invoker_deafening_blast: ["quas", "wex", "exort"]
 }
 
+const BIG_CC_MODIFIERS = [
+	"modifier_faceless_void_chronosphere_freeze",
+	"modifier_enigma_black_hole_pull",
+	"modifier_magnataur_reverse_polarity",
+	"modifier_magnataur_reverse_polarity_stun",
+	"modifier_axe_berserkers_call",
+	"modifier_treant_overgrowth",
+	"modifier_winter_wyvern_winters_curse",
+	"modifier_winter_wyvern_winters_curse_aura",
+	"modifier_bane_fiends_grip",
+	"modifier_shadow_shaman_shackles",
+	"modifier_pudge_dismember",
+	"modifier_tidehunter_ravage",
+	"modifier_primal_beast_pulverize",
+	"modifier_legion_commander_duel"
+]
+
 interface IComboTemplateInfo {
 	id: number
 	name: string
@@ -240,6 +257,15 @@ new (class InvokerCombo {
 	private sunstrikeInvis: any = null
 	private sunstrikeHPThreshold: any = null
 
+	private autoCataclysmNode: any = null
+	private enableAutoCataclysm: any = null
+	private cataclysmMinStunned: any = null
+	private cataclysmOnBigUlts: any = null
+	private cataclysmMinBigUlts: any = null
+	private cataclysmAutoInvoke: any = null
+	private cataclysmInvis: any = null
+	private pendingAutoCataclysm = false
+
 	private autoSkillNode: any = null
 	private autoSkillConfigs: Map<string, { key: any; mode: any }> = new Map()
 	private pendingAutoSkill: string | null = null
@@ -382,6 +408,50 @@ new (class InvokerCombo {
 			"Sunstrike in Invis",
 			false,
 			"Allow auto Sunstrike while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
+		)
+
+		// Auto Cataclysm
+		this.autoCataclysmNode = this.entry.AddNode(
+			"Auto Cataclysm",
+			"panorama/images/spellicons/invoker_sun_strike_png.vtex_c",
+			"",
+			0
+		)
+		this.enableAutoCataclysm = this.autoCataclysmNode.AddToggle(
+			"Enable Auto Cataclysm",
+			true,
+			"Automatically cast Cataclysm when enough enemies are stunned/disabled or trapped in big ultimates"
+		)
+		this.cataclysmMinStunned = this.autoCataclysmNode.AddSlider(
+			"Min Stunned / Rooted Enemies",
+			2,
+			1,
+			5,
+			1,
+			"Minimum number of stunned or rooted enemies on the map to trigger Cataclysm"
+		)
+		this.cataclysmOnBigUlts = this.autoCataclysmNode.AddToggle(
+			"Trigger on Major Teamfight Disables",
+			true,
+			"Auto-cast Cataclysm if enemies are caught in Chronosphere, Black Hole, Reverse Polarity, etc."
+		)
+		this.cataclysmMinBigUlts = this.autoCataclysmNode.AddSlider(
+			"Min Enemies in Major Disables",
+			1,
+			1,
+			5,
+			1,
+			"Minimum number of enemies caught in major crowd control to trigger Cataclysm"
+		)
+		this.cataclysmAutoInvoke = this.autoCataclysmNode.AddToggle(
+			"Auto-Invoke for Cataclysm",
+			true,
+			"Automatically invoke Sun Strike if it is not currently in slot D/F when Cataclysm conditions are met"
+		)
+		this.cataclysmInvis = this.autoCataclysmNode.AddToggle(
+			"Allow Cataclysm in Invis",
+			false,
+			"Allow auto Cataclysm while Invoker is invisible (Ghost Walk, Shadow Blade, etc.)"
 		)
 
 		this.activeTemplateDropdown.OnValue(() => {
@@ -961,6 +1031,137 @@ new (class InvokerCombo {
 		} else if (this.executeComboAbility(hero, ability, target)) {
 			this.sleeper.Sleep(GameState.InputLag * 1000 + ability.CastPoint * 1000 + 100)
 			return true
+		}
+
+		return false
+	}
+
+	private checkAutoCataclysm(hero: Hero): boolean {
+		if (
+			!this.enableAutoCataclysm.value ||
+			this.comboKey.isPressed ||
+			hero.IsChanneling ||
+			hero.IsStunned ||
+			hero.IsSilenced ||
+			hero.IsHexed ||
+			this.sleeper.Sleeping ||
+			GameState.RawGameTime - this.lastCataclysmCast < 2.0
+		) {
+			return false
+		}
+
+		if (!this.cataclysmInvis.value && hero.IsInvisible) {
+			return false
+		}
+
+		if (!this.hasScepter(hero) || !this.isSunStrikeUpgraded(hero)) {
+			return false
+		}
+
+		const sunstrike = hero.GetAbilityByName("invoker_sun_strike")
+		const ssInvoke = hero.GetAbilityByName("invoker_invoke")
+		if (!sunstrike || !sunstrike.IsValid || sunstrike.Level <= 0 || !ssInvoke || !ssInvoke.IsValid) {
+			return false
+		}
+
+		if (sunstrike.Cooldown > 0.1) {
+			return false
+		}
+
+		const ssActive = !sunstrike.IsHidden && hero.Mana >= sunstrike.ManaCost
+		const canInvoke = ssInvoke.Cooldown <= 0.1 && hero.Mana >= ssInvoke.ManaCost
+		const ssInvokable =
+			this.cataclysmAutoInvoke.value &&
+			sunstrike.IsHidden &&
+			canInvoke &&
+			hero.Mana >= sunstrike.ManaCost + ssInvoke.ManaCost
+
+		if (!ssActive && !ssInvokable) {
+			return false
+		}
+
+		let stunnedCount = 0
+		let bigUltsCount = 0
+
+		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+			if (
+				!enemy.IsEnemy(hero) ||
+				!enemy.IsAlive ||
+				!enemy.IsVisible ||
+				!isRealHero(enemy) ||
+				enemy.IsInvulnerable
+			) {
+				continue
+			}
+
+			// 1. Check major teamfight CC modifiers
+			const hasBigUlt = enemy.Buffs.some(b => BIG_CC_MODIFIERS.includes(b.Name))
+			if (hasBigUlt) {
+				bigUltsCount++
+			}
+
+			// 2. Check general stuns / roots / teleports / channels / bashes / atos / gleipnir
+			const isStunned = enemy.IsStunned
+			const isRooted = enemy.IsRooted
+			const isTeleporting = enemy.Buffs.some(b => b.Name === "modifier_teleporting")
+			const isChanneling = enemy.IsChanneling
+			const isBashed = enemy.Buffs.some(b => b.Name.startsWith("modifier_bashed"))
+			const isAtosOrGleipnir = enemy.Buffs.some(
+				b => b.Name === "modifier_rod_of_atos_debuff" || b.Name === "modifier_item_gungir_debuff"
+			)
+
+			if (isStunned || isRooted || isTeleporting || isChanneling || isBashed || isAtosOrGleipnir || hasBigUlt) {
+				const disableBuff = enemy.Buffs.find(
+					b =>
+						BIG_CC_MODIFIERS.includes(b.Name) ||
+						b.Name === "modifier_teleporting" ||
+						b.Name === "modifier_rod_of_atos_debuff" ||
+						b.Name === "modifier_item_gungir_debuff" ||
+						b.Name === "modifier_stunned" ||
+						b.Name.startsWith("modifier_bashed")
+				)
+				const remTime = disableBuff ? disableBuff.RemainingTime : 1.5
+				if (remTime >= 0.8 || hasBigUlt || isChanneling || isTeleporting) {
+					stunnedCount++
+				}
+			}
+		}
+
+		const triggerByStun = stunnedCount >= this.cataclysmMinStunned.value
+		const triggerByBigUlt = this.cataclysmOnBigUlts.value && bigUltsCount >= this.cataclysmMinBigUlts.value
+
+		if (!triggerByStun && !triggerByBigUlt) {
+			this.pendingAutoCataclysm = false
+			return false
+		}
+
+		if (ssActive) {
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+				issuers: [hero],
+				target: hero,
+				position: hero.Position.Clone(),
+				ability: sunstrike,
+				queue: false,
+				showEffects: true,
+				isPlayerInput: false
+			})
+			claimOrder()
+			this.lastCataclysmCast = GameState.RawGameTime
+			this.pendingAutoCataclysm = false
+			const reason = triggerByBigUlt
+				? `Major Teamfight CC (${bigUltsCount} enemy in Big Ult)`
+				: `${stunnedCount} Stunned/Disabled enemies`
+			console.log(`[InvokerCombo] Auto Cataclysm Casted! Reason: ${reason}`)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + sunstrike.CastPoint * 1000 + 200)
+			return true
+		} else if (ssInvokable) {
+			if (this.invokeSpell(hero, "invoker_sun_strike", ssInvoke)) {
+				this.pendingAutoCataclysm = true
+				console.log("[InvokerCombo] Auto Cataclysm: Invoking Sunstrike for Cataclysm trigger!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+				return true
+			}
 		}
 
 		return false
@@ -1691,6 +1892,34 @@ new (class InvokerCombo {
 				this.sleeper.Sleep(GameState.InputLag * 1000 + ss.CastPoint * 1000 + 200)
 			}
 			this.pendingSunstrikePos = null
+			return
+		}
+
+		// --- Pending Auto Cataclysm Cast ---
+		if (this.pendingAutoCataclysm && !hero.IsChanneling && !hero.IsStunned && !hero.IsSilenced && !hero.IsHexed) {
+			const ss = hero.GetAbilityByName("invoker_sun_strike")
+			if (ss && ss.IsValid && !ss.IsHidden && ss.Cooldown <= 0.1 && hero.Mana >= ss.ManaCost) {
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: hero,
+					position: hero.Position.Clone(),
+					ability: ss,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				claimOrder()
+				this.lastCataclysmCast = GameState.RawGameTime
+				console.log("[InvokerCombo] Auto Cataclysm: Executed pending Cataclysm!")
+				this.sleeper.Sleep(GameState.InputLag * 1000 + ss.CastPoint * 1000 + 200)
+			}
+			this.pendingAutoCataclysm = false
+			return
+		}
+
+		// --- Auto Cataclysm ---
+		if (this.checkAutoCataclysm(hero)) {
 			return
 		}
 
