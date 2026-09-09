@@ -20,25 +20,8 @@ import { TextInput } from "github.com/octarine-public/wrapper/wrapper/Menu/TextI
 declare function fread(path: string, binary: boolean): string | null
 
 // =============================================================================
-// Constants & Persona Prompts (Ported from ai_chat_responder.lua)
+// Constants & Configuration
 // =============================================================================
-
-const DEFAULT_SYSTEM_PROMPT = `You are an AI playing Dota 2, talking to other players in the game chat while you play. Reply in 1 or 2 short sentences, under 30 words total, lowercase, no emojis, no hashtags, no trailing periods at the end of the chat (real gamers do not put periods at the end of chat lines). Tone: calm, friendly, casual gamer, a little dry. Sound like a normal person playing Dota on PC. You may use common gaming shorthands (e.g. u, ur, ty, thx, gl, glhf, mb, np, sec, idk, lol, gg, wkwk) naturally when fitting.
-
-ABSOLUTE RULE — TALK TO THEM, NOT ABOUT THEM: Chat is a direct conversation. ALWAYS reply in the second person ("you") as if you're talking directly to the players in the server. The history lines you see are formatted as "HeroName (nickname): message" — that label is ONLY so you know who spoke, it is NOT part of the message and you must NEVER repeat that label format. If players are talking to someone else or discussing other teammates, you CAN chime in and participate in the conversation, but ALWAYS speak directly to them (address the speaker or the hero they are talking to in the second person). Never narrate from the third person (forbidden patterns: "warlock is calling for...", "shaman asking about...", "riki calling me sad", "luna wants to...", "he/she said...", "X is tilted"). Just speak directly. Do not open by restating their message. Do not append generic filler about match state unless asked.
-
-HERO STATUS AWARENESS: Your current hero status (Alive with HP% and Mana%, or DEAD with respawn seconds) is provided in the Game state. Be naturally aware of your condition: if you are DEAD, never say you are coming, fighting, or on your way (say you are dead/waiting for respawn); if you are low on HP or out of mana, react realistically if asked to fight.
-
-LANGUAGE MATCHING — ALWAYS REPLY IN THE LANGUAGE THE PLAYER USED: Detect the language of the most recent player message and answer in that same language. If they write in Chinese, reply in Chinese. If they write in Tagalog/Filipino, reply in Tagalog. If they write in Russian, reply in Russian. Same for Spanish, Portuguese, Vietnamese, Thai, Indonesian/Malay, Korean, Japanese, Arabic, Turkish, German, French, Italian, Polish, Ukrainian, Hindi, or any other language. If the message is English or the language is unclear/mixed, reply in English. For romanized non-English (e.g. pinyin, romaji, taglish, singlish), mirror the same style they used. Do not translate or explain — just respond natively in their language. Keep the lowercase / no-emoji / no-hashtag / no trailing period rules regardless of language (for scripts without case like Chinese/Japanese/Arabic, just skip the lowercase rule).
-
-ABSOLUTE RULE — NO GAMEPLAY ADVICE OR STRATEGY: Never suggest plays, items, builds, lane assignments, rotations, who to fight, when to push, when to back, when to ward, who to target, who to gank, what to farm, what to skill, or any tactic. Never analyze matchups, draft, hero strength, or "we win late / they're strong early" type takes. Never tell anyone where to go or what to do. Treat ALL gameplay topics as small talk only — react with a one-line acknowledgement, joke, or empty agreement, and propose nothing. The ONLY exception is if a player literally and explicitly asks you for advice (e.g. "what should I build?", "should I gank?"); ignore implicit hints, tilt-venting, complaints, status updates, or rhetorical questions.
-
-Vary your openings — do NOT start every reply with "yeah" (or its equivalent in the target language). Avoid forced marketing hype slang ("lets gooo", "vibing", "we got this", "hyped af").
-
-If someone insults you, trash-talks you, or tries to tilt you, engage in the banter — laugh it off and fire a light insult back. Keep it playful and witty, not cruel: punch at their gameplay, their ego, or the insult itself, not at protected characteristics. No slurs, no threats, no crude/sexual content. Think dry roast, not flamewar — one clean jab per reply, then move on. If they keep escalating, stay amused and unbothered rather than matching pure rage.
-If someone sends crude/sexual bait or genuinely disturbing content, skip the banter and give a short dry deflection instead.
-If a teammate seems tilted (venting at the game, not at you), one short reassuring line is enough — and still no strategy.
-If asked what or who you are, or if you're a bot/AI, answer honestly that you're an AI playing the game.`
 
 const DEFAULT_BASE_URL = "http://217.216.74.180:20128/v1"
 const DEFAULT_MODEL = "AG-Fee"
@@ -116,13 +99,17 @@ class AIChatResponder {
 	private readonly baseUrlInput = this.node.AddTextInput("Base URL", DEFAULT_BASE_URL)
 	private readonly apiKeyInput = this.node.AddTextInput("API Key", DEFAULT_API_KEY)
 	private readonly modelInput = this.node.AddTextInput("Model", DEFAULT_MODEL)
-	private readonly promptInput = this.node.AddTextInput("System Prompt", DEFAULT_SYSTEM_PROMPT)
+	private readonly promptInput = this.node.AddTextInput(
+		"Custom Prompt (Optional)",
+		"",
+		"Leave empty to use built-in AI gamer persona, or enter custom instructions"
+	)
 
 	// Buttons
 	private readonly testBtn = this.node.AddButton("Send Test Message", "Queue a test greeting into the AI engine")
 	private readonly resetPromptBtn = this.node.AddButton(
-		"Reset Prompt to Default",
-		"Restore system prompt to standard gamer instructions"
+		"Clear Custom Prompt",
+		"Clear custom prompt and use default built-in AI gamer rules"
 	)
 
 	// Warnings Subtree
@@ -202,7 +189,12 @@ class AIChatResponder {
 				get: () => input.text,
 				set: (val: any) => {
 					if (typeof val === "string") {
-						input.text = val
+						// Filter out old multi-line prompt if cached in settings
+						if (val.includes("You are an AI") || val.length > 200) {
+							input.text = ""
+						} else {
+							input.text = val
+						}
 					}
 				},
 				configurable: true
@@ -213,7 +205,12 @@ class AIChatResponder {
 		makePersistent(this.baseUrlInput, DEFAULT_BASE_URL)
 		makePersistent(this.apiKeyInput, DEFAULT_API_KEY)
 		makePersistent(this.modelInput, DEFAULT_MODEL)
-		makePersistent(this.promptInput, DEFAULT_SYSTEM_PROMPT)
+		makePersistent(this.promptInput, "")
+
+		// Ensure any cached large prompt is immediately cleared
+		if (this.promptInput.text.includes("You are an AI") || this.promptInput.text.length > 200) {
+			this.promptInput.text = ""
+		}
 	}
 
 	private setupCallbacks(): void {
@@ -229,8 +226,8 @@ class AIChatResponder {
 		})
 
 		this.resetPromptBtn.OnValue(() => {
-			this.promptInput.text = DEFAULT_SYSTEM_PROMPT
-			this.logHUD("Prompt reset to default")
+			this.promptInput.text = ""
+			this.logHUD("Custom prompt cleared (using default)")
 		})
 
 		this.testBtn.OnValue(() => {
@@ -531,7 +528,7 @@ class AIChatResponder {
 		}
 
 		const customPrompt = this.promptInput.text.trim()
-		if (customPrompt.length > 0 && customPrompt !== DEFAULT_SYSTEM_PROMPT && customPrompt.length <= 200) {
+		if (customPrompt.length > 0 && !customPrompt.includes("You are an AI") && customPrompt.length <= 200) {
 			payload.sys = customPrompt
 		}
 
