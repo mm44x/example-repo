@@ -21,7 +21,8 @@
 		"check-types-watch": "npx tsc --watch",
 		"upgrade-pack": "yarn upgrade-interactive --latest",
 		"check-circular": "npx madge --circular index.ts",
-		"lint": "eslint -c .eslintrc.json --ext .ts --fix ."
+		"lint": "eslint -c .eslintrc.json --ext .ts --fix .",
+		"ai-bridge": "node ai_bridge.mjs"
 	},
 	"contributors": [
 		"moofMonkey",
