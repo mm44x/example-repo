@@ -273,7 +273,7 @@ function handlePart(id, part, total, chunk, logPath) {
 	if (processedIds.has(id)) return
 
 	if (!partMap.has(id)) {
-		partMap.set(id, { created: Date.now(), parts: new Map() })
+		partMap.set(id, { created: Date.now(), total, parts: new Map() })
 	}
 	const entry = partMap.get(id)
 	entry.parts.set(part, chunk)
@@ -305,6 +305,7 @@ function checkConsoleLogs() {
 	const now = Date.now()
 	for (const [pId, pData] of partMap.entries()) {
 		if (now - pData.created > 30000) {
+			log("Console IPC", yellow(`Request ID ${pId} timed out (${pData.parts.size}/${pData.total || "?"} parts received)`))
 			partMap.delete(pId)
 		}
 	}

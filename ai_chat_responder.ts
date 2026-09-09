@@ -194,7 +194,7 @@ class AIChatResponder {
 	private readonly outboxQueue: OutboxItem[] = []
 	private lastChatSentTime = 0
 	private isRequestInProgress = false
-	private requestStartTime = 0
+	private requestStartTimeMs = 0
 	private pendingRequestId = 0
 	private lastProcessedResponseId = 0
 	private lastSmokeWarnTime = 0
@@ -204,6 +204,7 @@ class AIChatResponder {
 	private lastWarnScan = 0
 	private pendingTestTrigger = false
 	private pendingDispatchPayload: any = null
+	private readonly pendingConsoleQueue: string[] = []
 	private readonly hudLogs: string[] = ["AI Chat Responder initialized..."]
 	private static readonly IGNORED_NET_IDS = new Set([
 		4, // CNETMsg_Tick
@@ -316,6 +317,8 @@ class AIChatResponder {
 		this.outboxQueue.length = 0
 		this.warnCooldowns.clear()
 		this.isRequestInProgress = false
+		this.requestStartTimeMs = 0
+		this.pendingConsoleQueue.length = 0
 		this.lastChatSentTime = 0
 		this.pendingRequestId = 0
 		this.lastRoshanHP = 0
@@ -875,6 +878,8 @@ class AIChatResponder {
 			const childCount = Number(chatPanel.GetChildCount?.() ?? 0)
 			this.lastPanoChildCount = childCount
 			if (childCount === 0) {
+				this.lastPanoramaChildCount = 0
+				this.lastPanoramaLineText = ""
 				return
 			}
 
@@ -1192,17 +1197,17 @@ class AIChatResponder {
 				parts.push(`Your KDA: ${pTeam.Kills}/${pTeam.Deaths}/${pTeam.Assists}${streakStr}.`)
 			}
 
-			// Items in inventory
+			// Items in inventory (main 6)
 			if (localHero.HasInventory && Array.isArray(localHero.Items)) {
-				const items = localHero.Items.filter(i => i && i.IsValid).map(i =>
-					i.Name.replace(/^item_/, "").replace(/_/g, " ")
-				)
+				const items = localHero.Items.filter(i => i && i.IsValid)
+					.slice(0, 6)
+					.map(i => i.Name.replace(/^item_/, "").replace(/_/g, " "))
 				if (items.length > 0) {
 					parts.push(`Your items: ${items.join(", ")}.`)
 				}
 			}
 
-			// Allies & Enemies
+			// Allies & Enemies (compact hero names)
 			const allHeroes = EntityManager.GetEntitiesByClass(Hero)
 			const allies: string[] = []
 			const enemies: string[] = []
@@ -1212,12 +1217,10 @@ class AIChatResponder {
 					continue
 				}
 				const name = this.cleanHeroName(h.Name)
-				const nick = (h.PlayerID >= 0 ? PlayerCustomData.get(h.PlayerID)?.PlayerName : undefined) ?? name
-				const label = `${name} (${nick})`
 				if (h.Team === localHero.Team) {
-					allies.push(label)
+					allies.push(name)
 				} else {
-					enemies.push(label)
+					enemies.push(name)
 				}
 			}
 
@@ -1261,14 +1264,14 @@ class AIChatResponder {
 		const reqId = Date.now() % 100000000
 		this.pendingRequestId = reqId
 		this.isRequestInProgress = true
-		this.requestStartTime = GameState.RawGameTime
+		this.requestStartTimeMs = Date.now()
 
 		const payload: Record<string, any> = {
 			id: reqId,
 			c: channel,
 			p: this.persona.SelectedID,
 			ctx: this.buildGameContext(),
-			h: this.chatHistory.slice(-3).map(m => ({ r: m.role, m: m.content }))
+			h: this.chatHistory.slice(-2).map(m => ({ r: m.role, m: m.content }))
 		}
 
 		const customPrompt = this.promptInput.text.trim()
@@ -1312,15 +1315,15 @@ class AIChatResponder {
 		try {
 			const jsonStr = JSON.stringify(payload)
 			const hex = this.toHex(jsonStr)
-			// Chunk into 32-char parts so total command length is <= 49 chars (well below 64-char Source 2 limit)
+			// Chunk into 80-char parts (~100 chars total command length, well within Source 2 limit)
 			// No spaces in command name so Dota 2 outputs 'Unknown command: aip_...' directly to console.log
-			const CHUNK_SIZE = 32
+			const CHUNK_SIZE = 80
 			const totalParts = Math.ceil(hex.length / CHUNK_SIZE)
 			for (let i = 0; i < totalParts; i++) {
 				const chunk = hex.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)
-				SendToConsole(`aip_${payload.id}_${i + 1}_${totalParts}_${chunk}`)
+				this.pendingConsoleQueue.push(`aip_${payload.id}_${i + 1}_${totalParts}_${chunk}`)
 			}
-			this.logHUD(`Bridge: Sent ${totalParts} part(s) (${Math.round(hex.length / 2)}b)`)
+			this.logHUD(`Bridge: Queued ${totalParts} part(s) (${Math.round(hex.length / 2)}b)`)
 		} catch (e: any) {
 			this.logHUD(`Bridge error: ${e?.message ?? e}`)
 		}
@@ -1350,10 +1353,22 @@ class AIChatResponder {
 			this.dispatchToBridge(payload)
 		}
 
-		// Timeout check: 20 seconds
-		if (this.isRequestInProgress && GameState.RawGameTime - this.requestStartTime > 20) {
+		// Wall-clock timeout check: 15 seconds
+		if (this.isRequestInProgress && Date.now() - this.requestStartTimeMs > 15000) {
 			this.isRequestInProgress = false
-			this.logHUD("Request timed out after 20s")
+			this.pendingConsoleQueue.length = 0
+			this.logHUD("Request timed out after 15s")
+		}
+
+		// Dispatch up to 6 console command parts per tick to prevent Source 2 command buffer overflow
+		if (this.pendingConsoleQueue.length > 0) {
+			const batchSize = Math.min(6, this.pendingConsoleQueue.length)
+			for (let i = 0; i < batchSize; i++) {
+				const cmd = this.pendingConsoleQueue.shift()
+				if (cmd) {
+					SendToConsole(cmd)
+				}
+			}
 		}
 
 		// 1. Poll for sidecar response file
