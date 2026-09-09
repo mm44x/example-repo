@@ -1,6 +1,7 @@
 import {
 	Color,
 	EntityManager,
+	Events,
 	EventsSDK,
 	GameRules,
 	GameState,
@@ -16,8 +17,25 @@ import {
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 import { TextInput } from "github.com/octarine-public/wrapper/wrapper/Menu/TextInput"
+import { ParseProtobufDesc, ParseProtobufNamed } from "github.com/octarine-public/wrapper/wrapper/Utils/Protobuf"
+import { ViewBinaryStream } from "github.com/octarine-public/wrapper/wrapper/Utils/ViewBinaryStream"
 
 declare function fread(path: string, binary: boolean): string | null
+
+// Register Dota 2 chat Protobuf messages (ID 612 and ID 490)
+ParseProtobufDesc(`
+message CDOTAUserMsg_ChatMessage {
+	optional int32 source_player_id = 1;
+	optional uint32 channel_type = 2;
+	optional string message_text = 3;
+}
+message CDOTAUserMsg_BotChat {
+	optional int32 player_id = 1;
+	optional string message = 3;
+	optional string target = 4;
+	optional bool team_only = 5;
+}
+`)
 
 // =============================================================================
 // Constants & Configuration
@@ -99,10 +117,7 @@ class AIChatResponder {
 	private readonly baseUrlInput = this.node.AddTextInput("Base URL", DEFAULT_BASE_URL)
 	private readonly apiKeyInput = this.node.AddTextInput("API Key", DEFAULT_API_KEY)
 	private readonly modelInput = this.node.AddTextInput("Model", DEFAULT_MODEL)
-	private readonly promptInput = this.node.AddTextInput(
-		"Custom Prompt (Optional)",
-		"leave empty for default"
-	)
+	private readonly promptInput = this.node.AddTextInput("Custom Prompt (Optional)", "leave empty for default")
 
 	// Buttons
 	private readonly testBtn = this.node.AddButton("Send Test Message", "Queue a test greeting into the AI engine")
@@ -232,6 +247,7 @@ class AIChatResponder {
 	}
 
 	private registerEvents(): void {
+		Events.on("ServerMessage", this.onServerMessage.bind(this))
 		EventsSDK.on("GameEvent", this.onGameEvent.bind(this))
 		EventsSDK.on("ParticleCreated", this.onParticleCreated.bind(this))
 		EventsSDK.on("PostDataUpdate", this.onPostDataUpdate.bind(this))
@@ -314,17 +330,153 @@ class AIChatResponder {
 	// In-game Chat Listener
 	// =========================================================================
 
+	private onServerMessage(msgID: number, buf: ArrayBuffer): void {
+		if (!this.enabled.value) {
+			return
+		}
+
+		// 612 = DOTA_UM_ChatMessage (Dota 2 player chat in Source 2)
+		if (msgID === 612) {
+			let text = ""
+			let playerId = -1
+			let channelType = 0
+
+			try {
+				const msg = ParseProtobufNamed(new Uint8Array(buf), "CDOTAUserMsg_ChatMessage")
+				text = (msg.get("message_text") as string | undefined) ?? ""
+				playerId = (msg.get("source_player_id") as number | undefined) ?? -1
+				channelType = (msg.get("channel_type") as number | undefined) ?? 0
+			} catch {
+				// Protobuf named parser failed, use binary fallback unpacker
+			}
+
+			if (!text || playerId < 0) {
+				const fb = this.parseChatMessageFallback(buf)
+				if (fb) {
+					if (!text) {
+						text = fb.text
+					}
+					if (playerId < 0) {
+						playerId = fb.playerId
+					}
+					if (channelType === 0) {
+						channelType = fb.channelType
+					}
+				}
+			}
+
+			if (text.length > 0 && playerId >= 0) {
+				// channel_type 12 (DOTAChannelType_GameAllies) or 4 (DOTAChannelType_Team) is team chat
+				const isTeamOnly = channelType === 12 || channelType === 4
+				this.handleIncomingChat(text, playerId, isTeamOnly)
+			}
+		} else if (msgID === 490) {
+			// 490 = DOTA_UM_BotChat
+			try {
+				const msg = ParseProtobufNamed(new Uint8Array(buf), "CDOTAUserMsg_BotChat")
+				const text = (msg.get("message") as string | undefined) ?? ""
+				const playerId = (msg.get("player_id") as number | undefined) ?? -1
+				const isTeamOnly = Boolean(msg.get("team_only"))
+				if (text.length > 0 && playerId >= 0) {
+					this.handleIncomingChat(text, playerId, isTeamOnly)
+				}
+			} catch {
+				// ignore
+			}
+		}
+	}
+
+	private parseChatMessageFallback(buf: ArrayBuffer): { text: string; playerId: number; channelType: number } | null {
+		try {
+			const bytes = new Uint8Array(buf)
+			let offset = 0
+			let playerId = -1
+			let channelType = 0
+			let text = ""
+
+			while (offset < bytes.length) {
+				let tag = 0
+				let shift = 0
+				while (offset < bytes.length) {
+					const b = bytes[offset++]
+					tag |= (b & 0x7f) << shift
+					if ((b & 0x80) === 0) {
+						break
+					}
+					shift += 7
+				}
+
+				const fieldNum = tag >>> 3
+				const wireType = tag & 7
+
+				if (wireType === 0) {
+					// Varint
+					let val = 0
+					shift = 0
+					while (offset < bytes.length) {
+						const b = bytes[offset++]
+						val |= (b & 0x7f) << shift
+						if ((b & 0x80) === 0) {
+							break
+						}
+						shift += 7
+					}
+					if (fieldNum === 1) {
+						playerId = val | 0
+					} else if (fieldNum === 2) {
+						channelType = val | 0
+					}
+				} else if (wireType === 2) {
+					// Length-delimited string
+					let len = 0
+					shift = 0
+					while (offset < bytes.length) {
+						const b = bytes[offset++]
+						len |= (b & 0x7f) << shift
+						if ((b & 0x80) === 0) {
+							break
+						}
+						shift += 7
+					}
+					if (offset + len > bytes.length) {
+						break
+					}
+					if (fieldNum === 3) {
+						const stream = new ViewBinaryStream(new DataView(bytes.buffer, bytes.byteOffset + offset, len))
+						text = stream.ReadUtf8String(len)
+					}
+					offset += len
+				} else if (wireType === 1) {
+					offset += 8
+				} else if (wireType === 5) {
+					offset += 4
+				} else {
+					break
+				}
+			}
+
+			return { text, playerId, channelType }
+		} catch {
+			return null
+		}
+	}
+
 	private onGameEvent(eventName: string, obj: any): void {
 		if (eventName !== "player_chat" || !this.enabled.value) {
 			return
 		}
-
-		this.updateMatchHeroes()
-
-		const text = typeof obj.text === "string" ? obj.text.trim() : ""
+		const text = typeof obj.text === "string" ? obj.text : ""
 		const playerId = typeof obj.playerid === "number" ? obj.playerid : -1
 		const isTeamOnly = Boolean(obj.teamonly)
+		this.handleIncomingChat(text, playerId, isTeamOnly)
+	}
 
+	private handleIncomingChat(rawText: string, playerId: number, isTeamOnly: boolean): void {
+		if (!this.enabled.value) {
+			return
+		}
+
+		const text = rawText.trim()
 		if (text.length === 0 || playerId < 0) {
 			return
 		}
@@ -333,6 +485,8 @@ class AIChatResponder {
 		if (/^[-!/]/.test(text)) {
 			return
 		}
+
+		this.updateMatchHeroes()
 
 		const localPlayerId = LocalPlayer?.PlayerID ?? -1
 		const isSelf = playerId === localPlayerId
@@ -361,7 +515,7 @@ class AIChatResponder {
 		const speakerNick = speakerData?.PlayerName ?? `Player ${playerId}`
 		const speakerHero = this.getHeroOfPlayer(playerId)
 		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : "Player"
-		const label = isSelf ? "You" : `${speakerHeroName} (${speakerNick})`
+		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
 
 		// Check ignored hero list
 		if (speakerHero && this.isHeroIgnored(speakerHero.Name)) {
@@ -377,7 +531,8 @@ class AIChatResponder {
 
 		this.lastReplyTime.set(playerId, GameState.RawGameTime)
 		this.pushHistory("user", `${label}: ${text}`)
-		this.logHUD(`Chat heard from ${label}: "${text}"`)
+		const chanLabel = isTeamOnly ? "Team" : "All"
+		this.logHUD(`Chat [${chanLabel}] ${label}: "${text}"`)
 
 		this.requestCompletion(isTeamOnly ? "team" : "all")
 	}
