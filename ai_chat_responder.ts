@@ -22,8 +22,27 @@ import { ViewBinaryStream } from "github.com/octarine-public/wrapper/wrapper/Uti
 
 declare function fread(path: string, binary: boolean): string | null
 
-// Register Dota 2 chat Protobuf messages (ID 612 and ID 490)
+// Register Dota 2 chat Protobuf messages
 ParseProtobufDesc(`
+message CUserMessageSayText {
+	optional int32 playerindex = 1 [default = -1];
+	optional string text = 2;
+	optional bool chat = 3;
+}
+message CUserMessageSayText2 {
+	optional int32 entityindex = 1 [default = -1];
+	optional bool chat = 2;
+	optional string messagename = 3;
+	optional string param1 = 4;
+	optional string param2 = 5;
+	optional string param3 = 6;
+	optional string param4 = 7;
+}
+message CUserMessageSayTextChannel {
+	optional int32 player = 1;
+	optional int32 channel = 2;
+	optional string text = 3;
+}
 message CDOTAUserMsg_ChatMessage {
 	optional int32 source_player_id = 1;
 	optional uint32 channel_type = 2;
@@ -186,8 +205,28 @@ class AIChatResponder {
 	private pendingTestTrigger = false
 	private pendingDispatchPayload: any = null
 	private readonly hudLogs: string[] = ["AI Chat Responder initialized..."]
+	private static readonly IGNORED_NET_IDS = new Set([
+		4, // CNETMsg_Tick
+		40, // CSVCMsg_ServerInfo
+		41, // CSVCMsg_SendTable
+		45, // CSVCMsg_UpdateStringTable
+		51, // CSVCMsg_RemoveAllStringTables
+		55, // CSVCMsg_PacketEntities
+		145, // CUserMsg_ParticleManager
+		208, // CMsgSosStartSoundEvent
+		488, // CDOTAUserMsg_UnitEvent
+		489, // CDOTAUserMsg_ParticleManager
+		521, // CDOTAUserMsg_TE_UnitAnimation
+		522 // CDOTAUserMsg_TE_UnitAnimationEnd
+	])
+	private readonly recentNetMsgIDs: number[] = []
 	private netMsgCount = 0
 	private lastNetMsgStr = "Waiting for packets..."
+	private lastProcessedChatText = ""
+	private lastProcessedChatTime = 0
+	private lastPanoramaChildCount = -1
+	private lastPanoramaLineText = ""
+	private panoramaChatHooked = false
 
 	constructor() {
 		this.initPersistentInputs()
@@ -258,6 +297,23 @@ class AIChatResponder {
 		EventsSDK.on("GameEnded", this.onGameEnd.bind(this))
 		EventsSDK.on("GameStarted", this.onGameEnd.bind(this))
 		EventsSDK.on("ServerInfo", this.updateMatchHeroes.bind(this))
+
+		try {
+			if (
+				typeof Panorama !== "undefined" &&
+				Panorama &&
+				typeof Panorama.RegisterForUnhandledEvent === "function"
+			) {
+				Panorama.RegisterForUnhandledEvent("DOTAChatEvent", () => {
+					this.pollPanoramaChat()
+				})
+				Panorama.RegisterForUnhandledEvent("DotaChatNewMessage", () => {
+					this.pollPanoramaChat()
+				})
+			}
+		} catch {
+			// ignore
+		}
 	}
 
 	private logHUD(msg: string): void {
@@ -277,6 +333,11 @@ class AIChatResponder {
 		this.lastChatSentTime = 0
 		this.pendingRequestId = 0
 		this.lastRoshanHP = 0
+		this.lastPanoramaChildCount = -1
+		this.lastPanoramaLineText = ""
+		this.lastProcessedChatText = ""
+		this.lastProcessedChatTime = 0
+		this.panoramaChatHooked = false
 		this.ignoreHeroSelector.values = []
 		this.ignoreHeroSelector.enabledValues.clear()
 		this.ignoreHeroSelector.Update()
@@ -335,15 +396,102 @@ class AIChatResponder {
 
 	private onServerMessage(msgID: number, buf: ArrayBuffer): void {
 		this.netMsgCount++
-		if (msgID !== 4 && msgID !== 55 && msgID !== 488 && msgID !== 489 && msgID !== 521 && msgID !== 522) {
+
+		if (!AIChatResponder.IGNORED_NET_IDS.has(msgID)) {
 			this.lastNetMsgStr = `ID ${msgID} (${buf.byteLength}b)`
+			if (!this.recentNetMsgIDs.includes(msgID)) {
+				this.recentNetMsgIDs.push(msgID)
+				if (this.recentNetMsgIDs.length > 6) {
+					this.recentNetMsgIDs.shift()
+				}
+			}
 		}
 
 		if (!this.enabled.value) {
 			return
 		}
 
-		// 1. DOTA_UM_ChatMessage (ID 612)
+		// 1. CUserMessageSayText2 (ID 118) - Source 2 Player Chat
+		if (msgID === 118) {
+			let text = ""
+			let sender = ""
+			let playerId = -1
+			let isTeamOnly = false
+
+			try {
+				const msg = ParseProtobufNamed(new Uint8Array(buf), "CUserMessageSayText2")
+				const msgName = (msg.get("messagename") as string | undefined) ?? ""
+				sender = (msg.get("param1") as string | undefined) ?? ""
+				text = (msg.get("param2") as string | undefined) ?? ""
+				playerId = (msg.get("entityindex") as number | undefined) ?? -1
+				isTeamOnly = msgName.toLowerCase().includes("allies") || msgName.toLowerCase().includes("team")
+			} catch {
+				// Protobuf named parser failed, use binary fallback
+			}
+
+			if (!text) {
+				const fb = this.parseSayText2Fallback(buf)
+				if (fb) {
+					text = fb.text
+					sender = fb.sender
+					playerId = fb.playerId
+					isTeamOnly = fb.isTeamOnly
+				}
+			}
+
+			if (text.length > 0) {
+				if (playerId < 0) {
+					playerId = LocalPlayer?.PlayerID ?? 0
+				}
+				this.logHUD(`[SayText2] <${sender || "Player"}>: "${text}"`)
+				this.handleIncomingChat(text, playerId, isTeamOnly, sender)
+				return
+			}
+		}
+
+		// 2. CUserMessageSayText (ID 117)
+		if (msgID === 117) {
+			let text = ""
+			let playerId = -1
+			try {
+				const msg = ParseProtobufNamed(new Uint8Array(buf), "CUserMessageSayText")
+				text = (msg.get("text") as string | undefined) ?? ""
+				playerId = (msg.get("playerindex") as number | undefined) ?? -1
+			} catch {
+				// fallback
+			}
+			if (text.length > 0) {
+				if (playerId < 0) {
+					playerId = LocalPlayer?.PlayerID ?? 0
+				}
+				this.logHUD(`[SayText] "${text}"`)
+				this.handleIncomingChat(text, playerId, false)
+				return
+			}
+		}
+
+		// 3. CUserMessageSayTextChannel (ID 119)
+		if (msgID === 119) {
+			let text = ""
+			let playerId = -1
+			try {
+				const msg = ParseProtobufNamed(new Uint8Array(buf), "CUserMessageSayTextChannel")
+				text = (msg.get("text") as string | undefined) ?? ""
+				playerId = (msg.get("player") as number | undefined) ?? -1
+			} catch {
+				// fallback
+			}
+			if (text.length > 0) {
+				if (playerId < 0) {
+					playerId = LocalPlayer?.PlayerID ?? 0
+				}
+				this.logHUD(`[SayTextChannel] "${text}"`)
+				this.handleIncomingChat(text, playerId, false)
+				return
+			}
+		}
+
+		// 4. DOTA_UM_ChatMessage (ID 612)
 		if (msgID === 612) {
 			let text = ""
 			let playerId = -1
@@ -355,21 +503,15 @@ class AIChatResponder {
 				playerId = (msg.get("source_player_id") as number | undefined) ?? -1
 				channelType = (msg.get("channel_type") as number | undefined) ?? 0
 			} catch {
-				// Protobuf named parser failed, use binary fallback unpacker
+				// fallback
 			}
 
 			if (!text) {
 				const fb = this.parseChatMessageFallback(buf)
 				if (fb) {
-					if (!text) {
-						text = fb.text
-					}
-					if (playerId < 0) {
-						playerId = fb.playerId
-					}
-					if (channelType === 0) {
-						channelType = fb.channelType
-					}
+					text = fb.text
+					playerId = fb.playerId
+					channelType = fb.channelType
 				}
 			}
 
@@ -382,8 +524,10 @@ class AIChatResponder {
 				this.handleIncomingChat(text, playerId, isTeamOnly)
 				return
 			}
-		} else if (msgID === 490) {
-			// 2. DOTA_UM_BotChat (ID 490)
+		}
+
+		// 5. DOTA_UM_BotChat (ID 490)
+		if (msgID === 490) {
 			try {
 				const msg = ParseProtobufNamed(new Uint8Array(buf), "CDOTAUserMsg_BotChat")
 				const text = (msg.get("message") as string | undefined) ?? ""
@@ -399,32 +543,107 @@ class AIChatResponder {
 			}
 		}
 
-		// 3. Generic scanner for any other non-engine message ID that might carry chat
-		if (
-			msgID !== 4 &&
-			msgID !== 40 &&
-			msgID !== 41 &&
-			msgID !== 45 &&
-			msgID !== 51 &&
-			msgID !== 55 &&
-			msgID !== 145 &&
-			msgID !== 208 &&
-			msgID !== 488 &&
-			msgID !== 489 &&
-			msgID !== 521 &&
-			msgID !== 522
-		) {
+		// 6. Generic scanner fallback for any unknown packet carrying chat
+		if (!AIChatResponder.IGNORED_NET_IDS.has(msgID)) {
 			const found = this.findReadableString(buf)
 			if (
 				found &&
 				found.length >= 2 &&
 				!found.startsWith("npc_dota_") &&
 				!found.startsWith("models/") &&
-				!found.startsWith("particles/")
+				!found.startsWith("particles/") &&
+				!found.startsWith("sounds/") &&
+				!found.startsWith("#")
 			) {
 				this.logHUD(`[Net ${msgID}] "${found}"`)
 				this.handleIncomingChat(found, LocalPlayer?.PlayerID ?? 0, true)
 			}
+		}
+	}
+
+	private parseSayText2Fallback(
+		buf: ArrayBuffer
+	): { text: string; sender: string; playerId: number; isTeamOnly: boolean } | null {
+		try {
+			const bytes = new Uint8Array(buf)
+			let offset = 0
+			let playerId = -1
+			let msgName = ""
+			let sender = ""
+			let text = ""
+
+			while (offset < bytes.length) {
+				let tag = 0
+				let shift = 0
+				while (offset < bytes.length) {
+					const b = bytes[offset++]
+					tag |= (b & 0x7f) << shift
+					if ((b & 0x80) === 0) {
+						break
+					}
+					shift += 7
+				}
+				const fieldNum = tag >>> 3
+				const wireType = tag & 7
+
+				if (wireType === 0) {
+					let val = 0
+					shift = 0
+					while (offset < bytes.length) {
+						const b = bytes[offset++]
+						val |= (b & 0x7f) << shift
+						if ((b & 0x80) === 0) {
+							break
+						}
+						shift += 7
+					}
+					if (fieldNum === 1) {
+						playerId = val | 0
+					}
+				} else if (wireType === 2) {
+					let len = 0
+					shift = 0
+					while (offset < bytes.length) {
+						const b = bytes[offset++]
+						len |= (b & 0x7f) << shift
+						if ((b & 0x80) === 0) {
+							break
+						}
+						shift += 7
+					}
+					if (offset + len > bytes.length) {
+						break
+					}
+					if (len > 0 && len < 500) {
+						const stream = new ViewBinaryStream(new DataView(bytes.buffer, bytes.byteOffset + offset, len))
+						const str = stream.ReadUtf8String(len)
+						if (str && str.length > 0) {
+							if (fieldNum === 3) {
+								msgName = str
+							} else if (fieldNum === 4) {
+								sender = str
+							} else if (fieldNum === 5) {
+								text = str
+							}
+						}
+					}
+					offset += len
+				} else if (wireType === 1) {
+					offset += 8
+				} else if (wireType === 5) {
+					offset += 4
+				} else {
+					break
+				}
+			}
+
+			if (text.length > 0) {
+				const isTeamOnly = msgName.toLowerCase().includes("allies") || msgName.toLowerCase().includes("team")
+				return { text, sender, playerId, isTeamOnly }
+			}
+			return null
+		} catch {
+			return null
 		}
 	}
 
@@ -559,15 +778,179 @@ class AIChatResponder {
 		}
 	}
 
+	// =========================================================================
+	// Panorama Chat Integration
+	// =========================================================================
+
+	private pollPanoramaChat(): void {
+		if (!this.enabled.value) {
+			return
+		}
+		try {
+			if (typeof Panorama === "undefined" || !Panorama || typeof Panorama.FindRootPanel !== "function") {
+				return
+			}
+			const hud = Panorama.FindRootPanel("DotaHud")
+			if (!hud) {
+				return
+			}
+
+			const chatPanel =
+				hud.FindChildTraverse("ChatLinesPanel") ??
+				hud.FindChildTraverse("HudChat") ??
+				hud.FindChildTraverse("ChatLinesContainer") ??
+				hud.FindChildTraverse("ChatLines")
+			if (!chatPanel) {
+				return
+			}
+
+			if (!this.panoramaChatHooked) {
+				this.panoramaChatHooked = true
+				this.logHUD(`Panorama chat linked: ${chatPanel.GetID() || "ChatLinesPanel"}`)
+			}
+
+			const childCount = Number(chatPanel.GetChildCount?.() ?? 0)
+			if (childCount === 0) {
+				return
+			}
+
+			const lastChild = chatPanel.GetLastChild?.() ?? (childCount > 0 ? chatPanel.GetChild(childCount - 1) : null)
+
+			if (this.lastPanoramaChildCount < 0) {
+				// Initial hook: record current child count so existing history isn't spammed
+				this.lastPanoramaChildCount = childCount
+				if (lastChild) {
+					this.lastPanoramaLineText = this.extractPanelText(lastChild)
+				}
+				return
+			}
+
+			if (lastChild) {
+				const fullText = this.extractPanelText(lastChild)
+				if (
+					fullText &&
+					fullText.length > 0 &&
+					(fullText !== this.lastPanoramaLineText || childCount !== this.lastPanoramaChildCount)
+				) {
+					this.lastPanoramaLineText = fullText
+					this.lastPanoramaChildCount = childCount
+					this.processPanoramaChatLine(fullText)
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	private extractPanelText(panel: Nullable<IUIPanel>): string {
+		if (!panel) {
+			return ""
+		}
+		const parts: string[] = []
+		const walk = (p: IUIPanel, depth: number) => {
+			if (depth > 6) {
+				return
+			}
+			try {
+				const label = p as any as CLabel
+				if (typeof label.GetText === "function") {
+					const t = label.GetText()
+					if (t && typeof t === "string" && t.trim().length > 0) {
+						parts.push(t.trim())
+					}
+				}
+			} catch {
+				// ignore
+			}
+			try {
+				const count = Number(p.GetChildCount?.() ?? 0)
+				for (let i = 0; i < count; i++) {
+					const child = p.GetChild(i)
+					if (child) {
+						walk(child, depth + 1)
+					}
+				}
+			} catch {
+				// ignore
+			}
+		}
+		walk(panel, 0)
+		return parts.join(" ").trim()
+	}
+
+	private processPanoramaChatLine(rawLine: string): void {
+		const line = rawLine.trim()
+		if (!line || line.length < 2) {
+			return
+		}
+
+		if (this.isOwnEcho(line)) {
+			return
+		}
+
+		let isTeamOnly = false
+		let remaining = line
+		const chanMatch = line.match(/^\[(Allies|Team|All|Whisper|Party)\]\s*(.*)$/i)
+		if (chanMatch) {
+			const tag = chanMatch[1].toLowerCase()
+			isTeamOnly = tag === "allies" || tag === "team"
+			remaining = chanMatch[2]
+		}
+
+		let senderName = ""
+		let messageText = ""
+		const colonIdx = remaining.indexOf(":")
+		if (colonIdx > 0) {
+			senderName = remaining.slice(0, colonIdx).trim()
+			messageText = remaining.slice(colonIdx + 1).trim()
+		} else {
+			return
+		}
+
+		if (!messageText || messageText.length === 0) {
+			return
+		}
+
+		this.logHUD(`[Panorama] <${senderName || "Unknown"}>: "${messageText}"`)
+
+		let playerId = -1
+		if (senderName) {
+			const playerCustomData = PlayerCustomData.Array
+			for (const p of playerCustomData) {
+				if (p && p.PlayerName && p.PlayerName.trim().toLowerCase() === senderName.toLowerCase()) {
+					playerId = p.PlayerID
+					break
+				}
+			}
+		}
+		if (playerId < 0) {
+			playerId = LocalPlayer?.PlayerID ?? 0
+		}
+
+		this.handleIncomingChat(messageText, playerId, isTeamOnly, senderName)
+	}
+
+	// =========================================================================
+	// Game Event Fallback
+	// =========================================================================
+
 	private onGameEvent(eventName: string, obj: any): void {
 		if (!this.enabled.value) {
 			return
 		}
+		if (eventName.toLowerCase().includes("chat")) {
+			this.logHUD(`[GameEvent: ${eventName}]`)
+		}
 		if (obj && typeof obj === "object") {
 			const text = typeof obj.text === "string" ? obj.text : typeof obj.message === "string" ? obj.message : ""
 			if (text.length > 0) {
-				const playerId = typeof obj.playerid === "number" ? obj.playerid : LocalPlayer?.PlayerID ?? 0
-				const isTeamOnly = Boolean(obj.teamonly)
+				const playerId =
+					typeof obj.playerid === "number"
+						? obj.playerid
+						: typeof obj.player_id === "number"
+						? obj.player_id
+						: LocalPlayer?.PlayerID ?? 0
+				const isTeamOnly = Boolean(obj.teamonly ?? obj.team_only)
 				this.logHUD(`[GameEvent ${eventName}] "${text}"`)
 				this.handleIncomingChat(text, playerId, isTeamOnly)
 			}
@@ -590,7 +973,7 @@ class AIChatResponder {
 		}
 	}
 
-	private handleIncomingChat(rawText: string, playerId: number, isTeamOnly: boolean): void {
+	private handleIncomingChat(rawText: string, playerId: number, isTeamOnly: boolean, senderName?: string): void {
 		if (!this.enabled.value) {
 			return
 		}
@@ -605,6 +988,22 @@ class AIChatResponder {
 			return
 		}
 
+		// Filter out raw localization strings e.g. #Dota_Chat_...
+		if (text.startsWith("#")) {
+			return
+		}
+
+		// Deduplication across multiple hooks (e.g. NetMessage + Panorama UI + GameEvent)
+		const now = GameState.RawGameTime
+		if (
+			text.toLowerCase() === this.lastProcessedChatText.toLowerCase() &&
+			Math.abs(now - this.lastProcessedChatTime) < 1.0
+		) {
+			return
+		}
+		this.lastProcessedChatText = text
+		this.lastProcessedChatTime = now
+
 		this.updateMatchHeroes()
 
 		if (playerId < 0) {
@@ -616,9 +1015,9 @@ class AIChatResponder {
 
 		// Speaker resolution
 		const speakerData = PlayerCustomData.get(playerId)
-		const speakerNick = speakerData?.PlayerName ?? (isSelf ? "You" : `Player ${playerId}`)
+		const speakerNick = speakerData?.PlayerName ?? senderName ?? (isSelf ? "You" : `Player ${playerId}`)
 		const speakerHero = this.getHeroOfPlayer(playerId)
-		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : "Player"
+		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : senderName || "Player"
 		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
 		const chanLabel = isTeamOnly ? "Team" : "All"
 
@@ -656,12 +1055,12 @@ class AIChatResponder {
 
 		// Check per-player cooldown
 		const lastTime = this.lastReplyTime.get(playerId) ?? 0
-		if (GameState.RawGameTime - lastTime < this.cooldown.value) {
+		if (now - lastTime < this.cooldown.value) {
 			this.logHUD(`Cooldown active for ${speakerHeroName}`)
 			return
 		}
 
-		this.lastReplyTime.set(playerId, GameState.RawGameTime)
+		this.lastReplyTime.set(playerId, now)
 		this.pushHistory("user", `${label}: ${text}`)
 		this.logHUD(`Chat [${chanLabel}] ${label}: "${text}"`)
 
@@ -678,7 +1077,11 @@ class AIChatResponder {
 	}
 
 	private isOwnEcho(text: string): boolean {
-		return this.recentSelfReplies.includes(text)
+		const clean = text.trim().toLowerCase()
+		return this.recentSelfReplies.some(r => {
+			const rClean = r.trim().toLowerCase()
+			return clean === rClean || clean.includes(rClean) || rClean.includes(clean)
+		})
 	}
 
 	private rememberSelfReply(text: string): void {
@@ -908,6 +1311,9 @@ class AIChatResponder {
 			this.lastHeroScan = now
 			this.updateMatchHeroes()
 		}
+
+		// 5. Poll Panorama Chat Lines
+		this.pollPanoramaChat()
 	}
 
 	private readBridgeResponse(): string | null {
@@ -1140,14 +1546,16 @@ class AIChatResponder {
 	// =========================================================================
 
 	private onDraw(): void {
+		this.pollPanoramaChat()
+
 		if (!this.debugHud.value) {
 			return
 		}
 
 		const startX = 25
 		let startY = 180
-		const width = 480
-		const height = 220
+		const width = 500
+		const height = 230
 
 		RendererSDK.FilledRect(new Vector2(startX - 5, startY - 5), new Vector2(width, height), Color.Black.SetA(210))
 
@@ -1165,8 +1573,9 @@ class AIChatResponder {
 		RendererSDK.Text(`Status: ${statusStr}`, new Vector2(startX, startY), new Color(0, 255, 255), "Roboto", 12, 600)
 		startY += 18
 
+		const recNetStr = this.recentNetMsgIDs.length > 0 ? this.recentNetMsgIDs.join(", ") : "None"
 		RendererSDK.Text(
-			`Packets: ${this.netMsgCount} msgs | ${this.lastNetMsgStr}`,
+			`Packets: ${this.netMsgCount} msgs | ${this.lastNetMsgStr} | Rec: [${recNetStr}]`,
 			new Vector2(startX, startY),
 			Color.Yellow,
 			"Roboto",
@@ -1175,8 +1584,11 @@ class AIChatResponder {
 		)
 		startY += 16
 
+		const panoStatus = this.panoramaChatHooked ? "HOOKED" : "Searching..."
 		RendererSDK.Text(
-			`Outbox Queue: ${this.outboxQueue.length} msg(s) | ReplySelf: ${this.replySelf.value ? "ON" : "OFF"}`,
+			`Outbox: ${this.outboxQueue.length} msg(s) | ReplySelf: ${
+				this.replySelf.value ? "ON" : "OFF"
+			} | Panorama: ${panoStatus}`,
 			new Vector2(startX, startY),
 			new Color(255, 200, 100),
 			"Roboto",
