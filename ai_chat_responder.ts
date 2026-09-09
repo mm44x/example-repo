@@ -806,15 +806,27 @@ class AIChatResponder {
 			// ignore
 		}
 		try {
+			if (typeof p.textLabel === "string" && p.textLabel.trim().length > 0) {
+				return p.textLabel.trim()
+			}
+		} catch {
+			// ignore
+		}
+		try {
 			if (
 				typeof p.GetAttribute === "function" &&
 				typeof Panorama !== "undefined" &&
 				typeof Panorama.MakeSymbol === "function"
 			) {
-				const sym = Panorama.MakeSymbol("text")
-				const val = p.GetAttribute(sym, "")
-				if (typeof val === "string" && val.trim().length > 0) {
-					return val.trim()
+				const symText = Panorama.MakeSymbol("text")
+				const valText = p.GetAttribute(symText, "")
+				if (typeof valText === "string" && valText.trim().length > 0) {
+					return valText.trim()
+				}
+				const symHtml = Panorama.MakeSymbol("html")
+				const valHtml = p.GetAttribute(symHtml, "")
+				if (typeof valHtml === "string" && valHtml.trim().length > 0) {
+					return valHtml.trim()
 				}
 			}
 		} catch {
@@ -887,7 +899,47 @@ class AIChatResponder {
 				return
 			}
 
-			const fullText = this.extractPanelText(lastChild)
+			let fullText = this.extractPanelText(lastChild)
+			if (!fullText || fullText.length === 0) {
+				// Native Panorama JS fallback: run script inside chatPanel context
+				try {
+					if (typeof Panorama.ExecuteScript === "function") {
+						const sym = Panorama.MakeSymbol("__ai_chat_line")
+						Panorama.ExecuteScript(
+							chatPanel,
+							`try {
+								var p = $.GetContextPanel();
+								if (p) {
+									var cc = p.GetChildCount();
+									if (cc > 0) {
+										var last = p.GetChild(cc - 1);
+										var out = [];
+										function collect(node, depth) {
+											if (!node || depth > 6) return;
+											if (typeof node.text === "string" && node.text.trim().length > 0) {
+												out.push(node.text.trim());
+											}
+											var nch = node.GetChildCount();
+											for (var i = 0; i < nch; i++) collect(node.GetChild(i), depth + 1);
+										}
+										collect(last, 0);
+										if (out.length > 0) {
+											p.SetAttributeString("__ai_chat_line", out.join(" "));
+										}
+									}
+								}
+							} catch (e) {}`
+						)
+						const attrVal = chatPanel.GetAttribute(sym, "")
+						if (attrVal && attrVal.trim().length > 0) {
+							fullText = attrVal.trim()
+						}
+					}
+				} catch {
+					// ignore
+				}
+			}
+
 			if (!fullText || fullText.length === 0) {
 				return
 			}
@@ -938,7 +990,8 @@ class AIChatResponder {
 	}
 
 	private processPanoramaChatLine(rawLine: string): void {
-		const line = rawLine.trim()
+		// Strip HTML markup (e.g. <font color="...">...</font>) and clean whitespace
+		const line = rawLine.replace(/<[^>]*>/g, "").trim()
 		if (!line || line.length < 2) {
 			return
 		}
