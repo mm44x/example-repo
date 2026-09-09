@@ -226,6 +226,8 @@ class AIChatResponder {
 	private lastProcessedChatTime = 0
 	private lastPanoramaChildCount = -1
 	private lastPanoramaLineText = ""
+	private lastHookedPanelId = "Searching..."
+	private lastPanoChildCount = 0
 	private panoramaChatHooked = false
 
 	constructor() {
@@ -782,6 +784,74 @@ class AIChatResponder {
 	// Panorama Chat Integration
 	// =========================================================================
 
+	private getPanelText(p: any): string {
+		if (!p) {
+			return ""
+		}
+		try {
+			if (typeof p.GetText === "function") {
+				const val = p.GetText()
+				if (typeof val === "string" && val.trim().length > 0) {
+					return val.trim()
+				}
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			if (typeof p.text === "string" && p.text.trim().length > 0) {
+				return p.text.trim()
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			if (
+				typeof p.GetAttribute === "function" &&
+				typeof Panorama !== "undefined" &&
+				typeof Panorama.MakeSymbol === "function"
+			) {
+				const sym = Panorama.MakeSymbol("text")
+				const val = p.GetAttribute(sym, "")
+				if (typeof val === "string" && val.trim().length > 0) {
+					return val.trim()
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return ""
+	}
+
+	private findBestChatPanel(hud: IUIPanel): IUIPanel | null {
+		const candidates = [
+			hud.FindChildTraverse("ChatLinesPanel"),
+			hud.FindChildTraverse("ChatLinesWrapper"),
+			hud.FindChildTraverse("ChatLinesContainer"),
+			hud.FindChildTraverse("ChatLines"),
+			hud.FindChildTraverse("ChatHistory"),
+			hud.FindChildTraverse("HudChat")
+		]
+		for (const p of candidates) {
+			if (p) {
+				try {
+					const c = Number(p.GetChildCount?.() ?? 0)
+					if (c > 0) {
+						return p
+					}
+				} catch {
+					// ignore
+				}
+			}
+		}
+		for (const p of candidates) {
+			if (p) {
+				return p
+			}
+		}
+		return null
+	}
+
 	private pollPanoramaChat(): void {
 		if (!this.enabled.value) {
 			return
@@ -795,47 +865,43 @@ class AIChatResponder {
 				return
 			}
 
-			const chatPanel =
-				hud.FindChildTraverse("ChatLinesPanel") ??
-				hud.FindChildTraverse("HudChat") ??
-				hud.FindChildTraverse("ChatLinesContainer") ??
-				hud.FindChildTraverse("ChatLines")
+			const chatPanel = this.findBestChatPanel(hud)
 			if (!chatPanel) {
 				return
 			}
 
+			this.lastHookedPanelId = chatPanel.GetID() || "ChatPanel"
 			if (!this.panoramaChatHooked) {
 				this.panoramaChatHooked = true
-				this.logHUD(`Panorama chat linked: ${chatPanel.GetID() || "ChatLinesPanel"}`)
+				this.logHUD(`Panorama chat linked: ${this.lastHookedPanelId}`)
 			}
 
 			const childCount = Number(chatPanel.GetChildCount?.() ?? 0)
+			this.lastPanoChildCount = childCount
 			if (childCount === 0) {
 				return
 			}
 
 			const lastChild = chatPanel.GetLastChild?.() ?? (childCount > 0 ? chatPanel.GetChild(childCount - 1) : null)
-
-			if (this.lastPanoramaChildCount < 0) {
-				// Initial hook: record current child count so existing history isn't spammed
-				this.lastPanoramaChildCount = childCount
-				if (lastChild) {
-					this.lastPanoramaLineText = this.extractPanelText(lastChild)
-				}
+			if (!lastChild) {
 				return
 			}
 
-			if (lastChild) {
-				const fullText = this.extractPanelText(lastChild)
-				if (
-					fullText &&
-					fullText.length > 0 &&
-					(fullText !== this.lastPanoramaLineText || childCount !== this.lastPanoramaChildCount)
-				) {
-					this.lastPanoramaLineText = fullText
-					this.lastPanoramaChildCount = childCount
-					this.processPanoramaChatLine(fullText)
-				}
+			const fullText = this.extractPanelText(lastChild)
+			if (!fullText || fullText.length === 0) {
+				return
+			}
+
+			if (this.lastPanoramaLineText === "") {
+				// Initial hook: if a message is already on screen, process it immediately!
+				this.lastPanoramaLineText = fullText
+				this.lastPanoramaChildCount = childCount
+				this.logHUD(`[Pano Read] "${fullText}"`)
+				this.processPanoramaChatLine(fullText)
+			} else if (fullText !== this.lastPanoramaLineText || childCount !== this.lastPanoramaChildCount) {
+				this.lastPanoramaLineText = fullText
+				this.lastPanoramaChildCount = childCount
+				this.processPanoramaChatLine(fullText)
 			}
 		} catch {
 			// ignore
@@ -851,16 +917,9 @@ class AIChatResponder {
 			if (depth > 6) {
 				return
 			}
-			try {
-				const label = p as any as CLabel
-				if (typeof label.GetText === "function") {
-					const t = label.GetText()
-					if (t && typeof t === "string" && t.trim().length > 0) {
-						parts.push(t.trim())
-					}
-				}
-			} catch {
-				// ignore
+			const t = this.getPanelText(p)
+			if (t && t.length > 0) {
+				parts.push(t)
 			}
 			try {
 				const count = Number(p.GetChildCount?.() ?? 0)
@@ -904,7 +963,8 @@ class AIChatResponder {
 			senderName = remaining.slice(0, colonIdx).trim()
 			messageText = remaining.slice(colonIdx + 1).trim()
 		} else {
-			return
+			senderName = "Player"
+			messageText = remaining.trim()
 		}
 
 		if (!messageText || messageText.length === 0) {
@@ -914,7 +974,7 @@ class AIChatResponder {
 		this.logHUD(`[Panorama] <${senderName || "Unknown"}>: "${messageText}"`)
 
 		let playerId = -1
-		if (senderName) {
+		if (senderName && senderName !== "Player") {
 			const playerCustomData = PlayerCustomData.Array
 			for (const p of playerCustomData) {
 				if (p && p.PlayerName && p.PlayerName.trim().toLowerCase() === senderName.toLowerCase()) {
@@ -1021,11 +1081,12 @@ class AIChatResponder {
 		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
 		const chanLabel = isTeamOnly ? "Team" : "All"
 
+		// Demo mode detection
+		const heroes = EntityManager.GetEntitiesByClass(Hero).filter(h => h.IsValid && !h.IsIllusion)
+		const isDemoMode = heroes.length <= 1
+
 		// Ignore own AI echo
 		if (isSelf) {
-			const heroes = EntityManager.GetEntitiesByClass(Hero).filter(h => h.IsValid && !h.IsIllusion)
-			const isDemoMode = heroes.length <= 1
-
 			if (!this.replySelf.value && !isDemoMode) {
 				this.logHUD(`Drop self chat ("${text}") [Enable 'Reply to my own chat']`)
 				return
@@ -1036,15 +1097,17 @@ class AIChatResponder {
 			}
 		}
 
-		// Filter by channel mode (0 = All, 1 = Team, 2 = Both)
-		const channelMode = this.channelMode.SelectedID
-		if (channelMode === 0 && isTeamOnly) {
-			this.logHUD("Drop chat: channel mode blocks Team")
-			return
-		}
-		if (channelMode === 1 && !isTeamOnly) {
-			this.logHUD("Drop chat: channel mode blocks All")
-			return
+		// Filter by channel mode (0 = All, 1 = Team, 2 = Both) - Bypassed in Demo Mode
+		if (!isDemoMode) {
+			const channelMode = this.channelMode.SelectedID
+			if (channelMode === 0 && isTeamOnly) {
+				this.logHUD("Drop chat: channel mode blocks Team")
+				return
+			}
+			if (channelMode === 1 && !isTeamOnly) {
+				this.logHUD("Drop chat: channel mode blocks All")
+				return
+			}
 		}
 
 		// Check ignored hero list
@@ -1585,12 +1648,23 @@ class AIChatResponder {
 		startY += 16
 
 		const panoStatus = this.panoramaChatHooked ? "HOOKED" : "Searching..."
+		const lastTxtPreview = this.lastPanoramaLineText ? `"${this.lastPanoramaLineText.slice(0, 24)}"` : "none"
+		RendererSDK.Text(
+			`Pano: ${this.lastHookedPanelId} (${this.lastPanoChildCount} ch) | Last: ${lastTxtPreview}`,
+			new Vector2(startX, startY),
+			new Color(255, 200, 100),
+			"Roboto",
+			11,
+			500
+		)
+		startY += 16
+
 		RendererSDK.Text(
 			`Outbox: ${this.outboxQueue.length} msg(s) | ReplySelf: ${
 				this.replySelf.value ? "ON" : "OFF"
-			} | Panorama: ${panoStatus}`,
+			} | Pano: ${panoStatus}`,
 			new Vector2(startX, startY),
-			new Color(255, 200, 100),
+			new Color(150, 220, 255),
 			"Roboto",
 			11,
 			500
