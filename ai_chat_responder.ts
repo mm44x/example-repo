@@ -113,6 +113,11 @@ class AIChatResponder {
 		true,
 		"Whether the AI should reply to your own messages"
 	)
+	private readonly replyPings = this.node.AddToggle(
+		"Reply to Pings / Alt-Clicks",
+		false,
+		"When enabled, AI will also respond to ability/item cooldown pings and wheel alerts"
+	)
 	private readonly channelMode = this.node.AddDropdown("Listen Channel", ["All chat", "Team chat", "Both"], 2)
 	private readonly cooldown = this.node.AddSlider(
 		"Per-player Cooldown (s)",
@@ -410,6 +415,9 @@ class AIChatResponder {
 			try {
 				const msg = ParseProtobufNamed(new Uint8Array(buf), "CUserMessageSayText2")
 				const msgName = (msg.get("messagename") as string | undefined) ?? ""
+				if (!this.replyPings.value && this.isSystemMsgName(msgName)) {
+					return
+				}
 				sender = (msg.get("param1") as string | undefined) ?? ""
 				text = (msg.get("param2") as string | undefined) ?? ""
 				playerId = (msg.get("entityindex") as number | undefined) ?? -1
@@ -973,6 +981,10 @@ class AIChatResponder {
 			return
 		}
 
+		if (!this.replyPings.value && this.isSystemPing(messageText)) {
+			return
+		}
+
 		this.logHUD(`[Panorama] <${senderName || "Unknown"}>: "${messageText}"`)
 
 		let playerId = -1
@@ -1052,6 +1064,12 @@ class AIChatResponder {
 
 		// Filter out raw localization strings e.g. #Dota_Chat_...
 		if (text.startsWith("#")) {
+			return
+		}
+
+		// Filter out system pings / alt-clicks unless user explicitly enabled it
+		if (!this.replyPings.value && this.isSystemPing(text)) {
+			this.logHUD(`Drop ping: "${text.slice(0, 24)}"`)
 			return
 		}
 
@@ -1147,6 +1165,63 @@ class AIChatResponder {
 			const rClean = r.trim().toLowerCase()
 			return clean === rClean || clean.includes(rClean) || rClean.includes(clean)
 		})
+	}
+
+	private isSystemMsgName(msgName: string): boolean {
+		if (!msgName) {
+			return false
+		}
+		const clean = msgName.replace(/^#/, "")
+		// Standard chat channels: DOTA_Chat_All, DOTA_Chat_Allies, DOTA_Chat_Team, DOTA_Chat_Party, DOTA_Chat_Whisper
+		if (/^DOTA_Chat_(All|Allies|Team|Party|Whisper)$/i.test(clean)) {
+			return false
+		}
+		// Any other DOTA_Chat_* is a system event, ping, or chat wheel
+		if (/^DOTA_Chat_/i.test(clean)) {
+			return true
+		}
+		return false
+	}
+
+	private isSystemPing(text: string): boolean {
+		const clean = text.trim()
+		// Chat wheel icons / indicators: >, ▶, », ›, *, !
+		if (/^[>▶»›*!]/.test(clean)) {
+			return true
+		}
+		// Console ping shorthand: [ALL] -, [ALL]
+		if (/^\[ALL\]\s*[-!.]*$/i.test(clean)) {
+			return true
+		}
+		// Cooldown alerts & remaining seconds
+		if (/\b(?:on cooldown|seconds? remain|charges remaining)\b/i.test(clean)) {
+			return true
+		}
+		// Enemy item alerts (e.g. "Enemy Spirit Breaker   has Shadow Blade")
+		if (/^Enemy\s+.+\s+(?:has|is|was)\b/i.test(clean)) {
+			return true
+		}
+		// Quickbuy / gold alerts (e.g. "Need 2029 gold for Butterfly", "I will purchase ...")
+		if (/\bNeed\s+\d+\s+(?:gold|XP)\b/i.test(clean) || /\bI will purchase\b/i.test(clean)) {
+			return true
+		}
+		// Level ping: ( Level 4 )
+		if (/\( Level \d+ \)/i.test(clean)) {
+			return true
+		}
+		// Respawn alerts
+		if (/\bRespawn(?:ing)?\s+in\s+\d+/i.test(clean)) {
+			return true
+		}
+		// Standard status calls: missing, returned, buyback
+		if (/\b(?:is missing!?|returned to lane!?|buyback ready|buyback status|buyback on cooldown)\b/i.test(clean)) {
+			return true
+		}
+		// Game time pings: Current Game Time: 15:30
+		if (/\bCurrent Game Time:\b/i.test(clean)) {
+			return true
+		}
+		return false
 	}
 
 	private rememberSelfReply(text: string): void {
