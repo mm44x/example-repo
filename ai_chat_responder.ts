@@ -437,8 +437,8 @@ class AIChatResponder {
 			}
 
 			if (text.length > 0) {
-				if (playerId < 0) {
-					playerId = LocalPlayer?.PlayerID ?? 0
+				if (!this.replyPings.value && this.isSystemPing(text)) {
+					return
 				}
 				this.logHUD(`[SayText2] <${sender || "Player"}>: "${text}"`)
 				this.handleIncomingChat(text, playerId, isTeamOnly, sender)
@@ -458,8 +458,8 @@ class AIChatResponder {
 				// fallback
 			}
 			if (text.length > 0) {
-				if (playerId < 0) {
-					playerId = LocalPlayer?.PlayerID ?? 0
+				if (!this.replyPings.value && this.isSystemPing(text)) {
+					return
 				}
 				this.logHUD(`[SayText] "${text}"`)
 				this.handleIncomingChat(text, playerId, false)
@@ -479,8 +479,8 @@ class AIChatResponder {
 				// fallback
 			}
 			if (text.length > 0) {
-				if (playerId < 0) {
-					playerId = LocalPlayer?.PlayerID ?? 0
+				if (!this.replyPings.value && this.isSystemPing(text)) {
+					return
 				}
 				this.logHUD(`[SayTextChannel] "${text}"`)
 				this.handleIncomingChat(text, playerId, false)
@@ -513,8 +513,8 @@ class AIChatResponder {
 			}
 
 			if (text.length > 0) {
-				if (playerId < 0) {
-					playerId = LocalPlayer?.PlayerID ?? 0
+				if (!this.replyPings.value && this.isSystemPing(text)) {
+					return
 				}
 				const isTeamOnly = channelType === 12 || channelType === 4
 				this.logHUD(`[Net 612] "${text}"`)
@@ -531,8 +531,11 @@ class AIChatResponder {
 				const playerId = (msg.get("player_id") as number | undefined) ?? -1
 				const isTeamOnly = Boolean(msg.get("team_only"))
 				if (text.length > 0) {
+					if (!this.replyPings.value && this.isSystemPing(text)) {
+						return
+					}
 					this.logHUD(`[Bot 490] "${text}"`)
-					this.handleIncomingChat(text, playerId < 0 ? LocalPlayer?.PlayerID ?? 0 : playerId, isTeamOnly)
+					this.handleIncomingChat(text, playerId, isTeamOnly)
 					return
 				}
 			} catch {
@@ -552,8 +555,11 @@ class AIChatResponder {
 				!found.startsWith("sounds/") &&
 				!found.startsWith("#")
 			) {
+				if (!this.replyPings.value && this.isSystemPing(found)) {
+					return
+				}
 				this.logHUD(`[Net ${msgID}] "${found}"`)
-				this.handleIncomingChat(found, LocalPlayer?.PlayerID ?? 0, true)
+				this.handleIncomingChat(found, -1, true)
 			}
 		}
 	}
@@ -635,6 +641,9 @@ class AIChatResponder {
 			}
 
 			if (text.length > 0) {
+				if (!this.replyPings.value && this.isSystemMsgName(msgName)) {
+					return null
+				}
 				const isTeamOnly = msgName.toLowerCase().includes("allies") || msgName.toLowerCase().includes("team")
 				return { text, sender, playerId, isTeamOnly }
 			}
@@ -973,7 +982,11 @@ class AIChatResponder {
 			senderName = remaining.slice(0, colonIdx).trim()
 			messageText = remaining.slice(colonIdx + 1).trim()
 		} else {
-			senderName = "Player"
+			// No colon in line means this is a system announcement (e.g. "Ogre Magi was chosen by both teams!")
+			if (!this.replyPings.value) {
+				return
+			}
+			senderName = "System"
 			messageText = remaining.trim()
 		}
 
@@ -985,10 +998,16 @@ class AIChatResponder {
 			return
 		}
 
+		if (senderName && /^(?:Game|Console|System|Server)$/i.test(senderName.trim())) {
+			if (!this.replyPings.value) {
+				return
+			}
+		}
+
 		this.logHUD(`[Panorama] <${senderName || "Unknown"}>: "${messageText}"`)
 
 		let playerId = -1
-		if (senderName && senderName !== "Player") {
+		if (senderName && senderName !== "Player" && senderName !== "System") {
 			const playerCustomData = PlayerCustomData.Array
 			for (const p of playerCustomData) {
 				if (p && p.PlayerName && p.PlayerName.trim().toLowerCase() === senderName.toLowerCase()) {
@@ -996,9 +1015,6 @@ class AIChatResponder {
 					break
 				}
 			}
-		}
-		if (playerId < 0) {
-			playerId = LocalPlayer?.PlayerID ?? 0
 		}
 
 		this.handleIncomingChat(messageText, playerId, isTeamOnly, senderName)
@@ -1018,12 +1034,15 @@ class AIChatResponder {
 		if (obj && typeof obj === "object") {
 			const text = typeof obj.text === "string" ? obj.text : typeof obj.message === "string" ? obj.message : ""
 			if (text.length > 0) {
+				if (!this.replyPings.value && this.isSystemPing(text)) {
+					return
+				}
 				const playerId =
 					typeof obj.playerid === "number"
 						? obj.playerid
 						: typeof obj.player_id === "number"
 						? obj.player_id
-						: LocalPlayer?.PlayerID ?? 0
+						: -1
 				const isTeamOnly = Boolean(obj.teamonly ?? obj.team_only)
 				this.logHUD(`[GameEvent ${eventName}] "${text}"`)
 				this.handleIncomingChat(text, playerId, isTeamOnly)
@@ -1039,8 +1058,11 @@ class AIChatResponder {
 			for (const key of Object.keys(data)) {
 				const val = data[key]
 				if (typeof val === "string" && val.length > 0 && val.length < 200) {
+					if (!this.replyPings.value && this.isSystemPing(val)) {
+						return
+					}
 					this.logHUD(`[CustomEvent ${eventName}] "${val}"`)
-					this.handleIncomingChat(val, LocalPlayer?.PlayerID ?? 0, false)
+					this.handleIncomingChat(val, -1, false)
 					return
 				}
 			}
@@ -1067,6 +1089,13 @@ class AIChatResponder {
 			return
 		}
 
+		// Filter out system senders
+		if (senderName && /^(?:Game|Console|System|Server)$/i.test(senderName.trim())) {
+			if (!this.replyPings.value) {
+				return
+			}
+		}
+
 		// Filter out system pings / alt-clicks unless user explicitly enabled it
 		if (!this.replyPings.value && this.isSystemPing(text)) {
 			this.logHUD(`Drop ping: "${text.slice(0, 24)}"`)
@@ -1086,17 +1115,34 @@ class AIChatResponder {
 
 		this.updateMatchHeroes()
 
-		if (playerId < 0) {
-			playerId = LocalPlayer?.PlayerID ?? 0
+		const localPlayerId = LocalPlayer?.PlayerID ?? 0
+		let isSelf = false
+
+		if (playerId >= 0 && playerId === localPlayerId) {
+			isSelf = true
+		} else if (senderName && senderName !== "Player" && senderName !== "System") {
+			const myNick = PlayerCustomData.get(localPlayerId)?.PlayerName
+			if (myNick && myNick.trim().toLowerCase() === senderName.trim().toLowerCase()) {
+				isSelf = true
+				playerId = localPlayerId
+			}
 		}
 
-		const localPlayerId = LocalPlayer?.PlayerID ?? 0
-		const isSelf = playerId === localPlayerId
+		// Try to resolve playerId from senderName if not provided
+		if (playerId < 0 && senderName && senderName !== "Player" && senderName !== "System") {
+			const playerCustomData = PlayerCustomData.Array
+			for (const p of playerCustomData) {
+				if (p && p.PlayerName && p.PlayerName.trim().toLowerCase() === senderName.trim().toLowerCase()) {
+					playerId = p.PlayerID
+					break
+				}
+			}
+		}
 
 		// Speaker resolution
-		const speakerData = PlayerCustomData.get(playerId)
-		const speakerNick = speakerData?.PlayerName ?? senderName ?? (isSelf ? "You" : `Player ${playerId}`)
-		const speakerHero = this.getHeroOfPlayer(playerId)
+		const speakerData = playerId >= 0 ? PlayerCustomData.get(playerId) : undefined
+		const speakerNick = speakerData?.PlayerName ?? senderName ?? (isSelf ? "You" : "Player")
+		const speakerHero = playerId >= 0 ? this.getHeroOfPlayer(playerId) : undefined
 		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : senderName || "Player"
 		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
 		const chanLabel = isTeamOnly ? "Team" : "All"
@@ -1137,13 +1183,15 @@ class AIChatResponder {
 		}
 
 		// Check per-player cooldown
-		const lastTime = this.lastReplyTime.get(playerId) ?? 0
-		if (now - lastTime < this.cooldown.value) {
-			this.logHUD(`Cooldown active for ${speakerHeroName}`)
-			return
+		if (playerId >= 0) {
+			const lastTime = this.lastReplyTime.get(playerId) ?? 0
+			if (now - lastTime < this.cooldown.value) {
+				this.logHUD(`Cooldown active for ${speakerHeroName}`)
+				return
+			}
+			this.lastReplyTime.set(playerId, now)
 		}
 
-		this.lastReplyTime.set(playerId, now)
 		this.pushHistory("user", `${label}: ${text}`)
 		this.logHUD(`Chat [${chanLabel}] ${label}: "${text}"`)
 
@@ -1171,56 +1219,94 @@ class AIChatResponder {
 		if (!msgName) {
 			return false
 		}
-		const clean = msgName.replace(/^#/, "")
-		// Standard chat channels: DOTA_Chat_All, DOTA_Chat_Allies, DOTA_Chat_Team, DOTA_Chat_Party, DOTA_Chat_Whisper
+		const clean = msgName.replace(/^#/, "").trim()
+		// Standard human-typed chat channels:
 		if (/^DOTA_Chat_(All|Allies|Team|Party|Whisper)$/i.test(clean)) {
 			return false
 		}
-		// Any other DOTA_Chat_* is a system event, ping, or chat wheel
-		if (/^DOTA_Chat_/i.test(clean)) {
-			return true
-		}
-		return false
+		// Any other message name in SayText2 is an automated game event, alt-click, or chat wheel
+		return true
 	}
 
 	private isSystemPing(text: string): boolean {
 		const clean = text.trim()
-		// Chat wheel icons / indicators: >, ▶, », ›, *, !
-		if (/^[>▶»›*!]/.test(clean)) {
+
+		// 1. Chat wheel icons / indicators: >, ▶, », ›, *, !, ◄, ►
+		if (/^[>▶»›*!◄►]/.test(clean)) {
 			return true
 		}
-		// Console ping shorthand: [ALL] -, [ALL]
-		if (/^\[ALL\]\s*[-!.]*$/i.test(clean)) {
+
+		// 2. Chat wheel soundbites / voice lines (e.g. '[ALL] Ah ha ha! "" -', or contains '"" -')
+		if (/""\s*-/i.test(clean) || /^\[(?:ALL|TEAM)\]/i.test(clean)) {
 			return true
 		}
-		// Cooldown alerts & remaining seconds
-		if (/\b(?:on cooldown|seconds? remain|charges remaining)\b/i.test(clean)) {
+
+		// 3. Map orders / Tactical ping with location in parens (e.g. '   (Here)', '   (Top Jungle)', '   (Watcher)')
+		// Dota 2 always formats map pings with 2+ spaces before '(Location)'
+		if (/\s{2,}\([^)]{2,}\)\s*$/i.test(clean)) {
 			return true
 		}
-		// Enemy item alerts (e.g. "Enemy Spirit Breaker   has Shadow Blade")
+
+		// 4. Tactical action prefixes (Attack, Defend, Heading to, On my way, Move, Retreat, Careful, Beware)
+		if (/^(?:Attack|Defend|Heading to|On my way to|Moving to|Retreat|Careful|Beware)\s+/i.test(clean)) {
+			return true
+		}
+
+		// 5. Vision alerts
+		if (/^Enemy\s+Has\s+Vision\b/i.test(clean) || /^We\s+Need\s+(?:Vision|Wards)\b/i.test(clean)) {
+			return true
+		}
+
+		// 6. Cooldown, charges, and ability/item status
+		if (
+			/\b(?:on cooldown|seconds?\s+remain|charges?\s+remaining)\b/i.test(clean) ||
+			/\(\s*\d+\s+charges?\s*\)/i.test(clean)
+		) {
+			return true
+		}
+
+		// 7. Ready status: Dota 2 formats item/ability as "<Item Name>  Ready" (2+ spaces before Ready)
+		if (/\s{2,}Ready\s*$/i.test(clean)) {
+			return true
+		}
+
+		// 8. Enemy hero/item alerts (e.g. "Enemy Spirit Breaker   has Shadow Blade")
 		if (/^Enemy\s+.+\s+(?:has|is|was)\b/i.test(clean)) {
 			return true
 		}
-		// Quickbuy / gold alerts (e.g. "Need 2029 gold for Butterfly", "I will purchase ...")
+
+		// 9. Economy & Quickbuy alerts
 		if (/\bNeed\s+\d+\s+(?:gold|XP)\b/i.test(clean) || /\bI will purchase\b/i.test(clean)) {
 			return true
 		}
-		// Level ping: ( Level 4 )
-		if (/\( Level \d+ \)/i.test(clean)) {
+
+		// 10. Level & Respawn pings
+		if (/\(\s*Level\s+\d+\s*\)/i.test(clean) || /\bRespawn(?:ing)?\s+in\s+\d+/i.test(clean)) {
 			return true
 		}
-		// Respawn alerts
-		if (/\bRespawn(?:ing)?\s+in\s+\d+/i.test(clean)) {
-			return true
-		}
-		// Standard status calls: missing, returned, buyback
+
+		// 11. Status calls & buyback
 		if (/\b(?:is missing!?|returned to lane!?|buyback ready|buyback status|buyback on cooldown)\b/i.test(clean)) {
 			return true
 		}
-		// Game time pings: Current Game Time: 15:30
-		if (/\bCurrent Game Time:\b/i.test(clean)) {
+
+		// 12. Dropped items (e.g. "Gem of True Sight dropped here.")
+		if (/\bdropped here\.?$/i.test(clean) || /\bhas (?:picked up|dropped)\b/i.test(clean)) {
 			return true
 		}
+
+		// 13. System announcements (draft, pause, disconnect, kills)
+		if (
+			/\bwas chosen by both teams\b/i.test(clean) ||
+			/\bwas banned\b/i.test(clean) ||
+			/\bhas (?:dis)?connected\b/i.test(clean) ||
+			/\b(?:paused|unpaused) the game\b/i.test(clean) ||
+			/\bgame is safe to leave\b/i.test(clean) ||
+			/\bCurrent Game Time:\b/i.test(clean)
+		) {
+			return true
+		}
+
 		return false
 	}
 
