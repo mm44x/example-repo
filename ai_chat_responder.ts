@@ -229,6 +229,7 @@ class AIChatResponder {
 	private lastHookedPanelId = "Searching..."
 	private lastPanoChildCount = 0
 	private panoramaChatHooked = false
+	private lastPanoPollTime = 0
 
 	constructor() {
 		this.initPersistentInputs()
@@ -299,23 +300,6 @@ class AIChatResponder {
 		EventsSDK.on("GameEnded", this.onGameEnd.bind(this))
 		EventsSDK.on("GameStarted", this.onGameEnd.bind(this))
 		EventsSDK.on("ServerInfo", this.updateMatchHeroes.bind(this))
-
-		try {
-			if (
-				typeof Panorama !== "undefined" &&
-				Panorama &&
-				typeof Panorama.RegisterForUnhandledEvent === "function"
-			) {
-				Panorama.RegisterForUnhandledEvent("DOTAChatEvent", () => {
-					this.pollPanoramaChat()
-				})
-				Panorama.RegisterForUnhandledEvent("DotaChatNewMessage", () => {
-					this.pollPanoramaChat()
-				})
-			}
-		} catch {
-			// ignore
-		}
 	}
 
 	private logHUD(msg: string): void {
@@ -865,7 +849,7 @@ class AIChatResponder {
 	}
 
 	private pollPanoramaChat(): void {
-		if (!this.enabled.value) {
+		if (!this.enabled.value || !GameState.IsConnected) {
 			return
 		}
 		try {
@@ -899,47 +883,7 @@ class AIChatResponder {
 				return
 			}
 
-			let fullText = this.extractPanelText(lastChild)
-			if (!fullText || fullText.length === 0) {
-				// Native Panorama JS fallback: run script inside chatPanel context
-				try {
-					if (typeof Panorama.ExecuteScript === "function") {
-						const sym = Panorama.MakeSymbol("__ai_chat_line")
-						Panorama.ExecuteScript(
-							chatPanel,
-							`try {
-								var p = $.GetContextPanel();
-								if (p) {
-									var cc = p.GetChildCount();
-									if (cc > 0) {
-										var last = p.GetChild(cc - 1);
-										var out = [];
-										function collect(node, depth) {
-											if (!node || depth > 6) return;
-											if (typeof node.text === "string" && node.text.trim().length > 0) {
-												out.push(node.text.trim());
-											}
-											var nch = node.GetChildCount();
-											for (var i = 0; i < nch; i++) collect(node.GetChild(i), depth + 1);
-										}
-										collect(last, 0);
-										if (out.length > 0) {
-											p.SetAttributeString("__ai_chat_line", out.join(" "));
-										}
-									}
-								}
-							} catch (e) {}`
-						)
-						const attrVal = chatPanel.GetAttribute(sym, "")
-						if (attrVal && attrVal.trim().length > 0) {
-							fullText = attrVal.trim()
-						}
-					}
-				} catch {
-					// ignore
-				}
-			}
-
+			const fullText = this.extractPanelText(lastChild)
 			if (!fullText || fullText.length === 0) {
 				return
 			}
@@ -1387,6 +1331,10 @@ class AIChatResponder {
 	// =========================================================================
 
 	private onPostDataUpdate(): void {
+		if (!this.enabled.value || !GameState.IsConnected) {
+			return
+		}
+
 		// Handle queued test button clicks on the game main thread
 		if (this.pendingTestTrigger) {
 			this.pendingTestTrigger = false
@@ -1428,8 +1376,11 @@ class AIChatResponder {
 			this.updateMatchHeroes()
 		}
 
-		// 5. Poll Panorama Chat Lines
-		this.pollPanoramaChat()
+		// 5. Poll Panorama Chat Lines (Throttled to 250ms)
+		if (now - this.lastPanoPollTime >= 0.25) {
+			this.lastPanoPollTime = now
+			this.pollPanoramaChat()
+		}
 	}
 
 	private readBridgeResponse(): string | null {
@@ -1662,9 +1613,7 @@ class AIChatResponder {
 	// =========================================================================
 
 	private onDraw(): void {
-		this.pollPanoramaChat()
-
-		if (!this.debugHud.value) {
+		if (!this.debugHud.value || !GameState.IsConnected) {
 			return
 		}
 
