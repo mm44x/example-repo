@@ -91,7 +91,7 @@ class AIChatResponder {
 	)
 	private readonly replySelf = this.node.AddToggle(
 		"Reply to my own chat",
-		false,
+		true,
 		"Whether the AI should reply to your own messages"
 	)
 	private readonly channelMode = this.node.AddDropdown("Listen Channel", ["All chat", "Team chat", "Both"], 2)
@@ -350,7 +350,7 @@ class AIChatResponder {
 				// Protobuf named parser failed, use binary fallback unpacker
 			}
 
-			if (!text || playerId < 0) {
+			if (!text) {
 				const fb = this.parseChatMessageFallback(buf)
 				if (fb) {
 					if (!text) {
@@ -365,7 +365,10 @@ class AIChatResponder {
 				}
 			}
 
-			if (text.length > 0 && playerId >= 0) {
+			if (text.length > 0) {
+				if (playerId < 0) {
+					playerId = LocalPlayer?.PlayerID ?? 0
+				}
 				// channel_type 12 (DOTAChannelType_GameAllies) or 4 (DOTAChannelType_Team) is team chat
 				const isTeamOnly = channelType === 12 || channelType === 4
 				this.handleIncomingChat(text, playerId, isTeamOnly)
@@ -377,8 +380,8 @@ class AIChatResponder {
 				const text = (msg.get("message") as string | undefined) ?? ""
 				const playerId = (msg.get("player_id") as number | undefined) ?? -1
 				const isTeamOnly = Boolean(msg.get("team_only"))
-				if (text.length > 0 && playerId >= 0) {
-					this.handleIncomingChat(text, playerId, isTeamOnly)
+				if (text.length > 0) {
+					this.handleIncomingChat(text, playerId < 0 ? LocalPlayer?.PlayerID ?? 0 : playerId, isTeamOnly)
 				}
 			} catch {
 				// ignore
@@ -441,9 +444,12 @@ class AIChatResponder {
 					if (offset + len > bytes.length) {
 						break
 					}
-					if (fieldNum === 3) {
+					if (fieldNum === 3 || (!text && len > 0 && len < 500)) {
 						const stream = new ViewBinaryStream(new DataView(bytes.buffer, bytes.byteOffset + offset, len))
-						text = stream.ReadUtf8String(len)
+						const extracted = stream.ReadUtf8String(len)
+						if (extracted && extracted.length > 0) {
+							text = extracted
+						}
 					}
 					offset += len
 				} else if (wireType === 1) {
@@ -462,13 +468,17 @@ class AIChatResponder {
 	}
 
 	private onGameEvent(eventName: string, obj: any): void {
-		if (eventName !== "player_chat" || !this.enabled.value) {
+		if (!this.enabled.value) {
 			return
 		}
-		const text = typeof obj.text === "string" ? obj.text : ""
-		const playerId = typeof obj.playerid === "number" ? obj.playerid : -1
-		const isTeamOnly = Boolean(obj.teamonly)
-		this.handleIncomingChat(text, playerId, isTeamOnly)
+		if (eventName === "player_chat") {
+			const text = typeof obj.text === "string" ? obj.text : ""
+			const playerId = typeof obj.playerid === "number" ? obj.playerid : LocalPlayer?.PlayerID ?? 0
+			const isTeamOnly = Boolean(obj.teamonly)
+			if (text.length > 0) {
+				this.handleIncomingChat(text, playerId, isTeamOnly)
+			}
+		}
 	}
 
 	private handleIncomingChat(rawText: string, playerId: number, isTeamOnly: boolean): void {
@@ -477,7 +487,7 @@ class AIChatResponder {
 		}
 
 		const text = rawText.trim()
-		if (text.length === 0 || playerId < 0) {
+		if (text.length === 0) {
 			return
 		}
 
@@ -488,15 +498,32 @@ class AIChatResponder {
 
 		this.updateMatchHeroes()
 
-		const localPlayerId = LocalPlayer?.PlayerID ?? -1
+		if (playerId < 0) {
+			playerId = LocalPlayer?.PlayerID ?? 0
+		}
+
+		const localPlayerId = LocalPlayer?.PlayerID ?? 0
 		const isSelf = playerId === localPlayerId
+
+		// Speaker resolution
+		const speakerData = PlayerCustomData.get(playerId)
+		const speakerNick = speakerData?.PlayerName ?? (isSelf ? "You" : `Player ${playerId}`)
+		const speakerHero = this.getHeroOfPlayer(playerId)
+		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : "Player"
+		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
+		const chanLabel = isTeamOnly ? "Team" : "All"
 
 		// Ignore own AI echo
 		if (isSelf) {
-			if (!this.replySelf.value) {
+			const heroes = EntityManager.GetEntitiesByClass(Hero).filter(h => h.IsValid && !h.IsIllusion)
+			const isDemoMode = heroes.length <= 1
+
+			if (!this.replySelf.value && !isDemoMode) {
+				this.logHUD(`Drop self chat ("${text}") [Enable 'Reply to my own chat']`)
 				return
 			}
 			if (this.isOwnEcho(text)) {
+				this.logHUD(`Drop AI echo ("${text}")`)
 				return
 			}
 		}
@@ -504,18 +531,13 @@ class AIChatResponder {
 		// Filter by channel mode (0 = All, 1 = Team, 2 = Both)
 		const channelMode = this.channelMode.SelectedID
 		if (channelMode === 0 && isTeamOnly) {
+			this.logHUD("Drop chat: channel mode blocks Team")
 			return
 		}
 		if (channelMode === 1 && !isTeamOnly) {
+			this.logHUD("Drop chat: channel mode blocks All")
 			return
 		}
-
-		// Speaker resolution
-		const speakerData = PlayerCustomData.get(playerId)
-		const speakerNick = speakerData?.PlayerName ?? `Player ${playerId}`
-		const speakerHero = this.getHeroOfPlayer(playerId)
-		const speakerHeroName = speakerHero ? this.cleanHeroName(speakerHero.Name) : "Player"
-		const label = isSelf ? "You" : speakerHero ? `${speakerHeroName} (${speakerNick})` : speakerNick
 
 		// Check ignored hero list
 		if (speakerHero && this.isHeroIgnored(speakerHero.Name)) {
@@ -526,12 +548,12 @@ class AIChatResponder {
 		// Check per-player cooldown
 		const lastTime = this.lastReplyTime.get(playerId) ?? 0
 		if (GameState.RawGameTime - lastTime < this.cooldown.value) {
+			this.logHUD(`Cooldown active for ${speakerHeroName}`)
 			return
 		}
 
 		this.lastReplyTime.set(playerId, GameState.RawGameTime)
 		this.pushHistory("user", `${label}: ${text}`)
-		const chanLabel = isTeamOnly ? "Team" : "All"
 		this.logHUD(`Chat [${chanLabel}] ${label}: "${text}"`)
 
 		this.requestCompletion(isTeamOnly ? "team" : "all")
