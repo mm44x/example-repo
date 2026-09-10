@@ -1,6 +1,7 @@
 import { EventsSDK } from "github.com/octarine-public/wrapper/index"
 
 let orderIssuedThisFrame = false
+let creepBlockingActive = false
 
 // Reset the flag at the start of every PostDataUpdate frame.
 // This handler is registered first (due to import order in index.ts),
@@ -10,9 +11,11 @@ EventsSDK.on("PostDataUpdate", () => {
 })
 EventsSDK.on("GameEnded", () => {
 	orderIssuedThisFrame = false
+	creepBlockingActive = false
 })
 EventsSDK.on("GameStarted", () => {
 	orderIssuedThisFrame = false
+	creepBlockingActive = false
 })
 
 /** Peek at whether any script has already issued an order this frame. */
@@ -23,6 +26,14 @@ export function hasOrderBeenIssued(): boolean {
 /** Claim the order slot for this frame — subsequent scripts should skip. */
 export function claimOrder(): void {
 	orderIssuedThisFrame = true
+}
+
+export function setCreepBlockingActive(active: boolean): void {
+	creepBlockingActive = active
+}
+
+export function isCreepBlockingActive(): boolean {
+	return creepBlockingActive
 }
 
 /**

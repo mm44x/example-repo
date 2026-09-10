@@ -1,4 +1,3 @@
-import "./coordination"
 import "./auto_ban"
 import "./rubick_combo"
 import "./last_hit"
@@ -18,6 +17,7 @@ import "./zeus_combo"
 import "./pudge_combo"
 import "./juggernaut_combo"
 import "./auto_sprout_breaker"
+import "./creep_blocker"
 import "./auto_kill_say"
 import "./ai_chat_responder"
 
@@ -34,6 +34,8 @@ import {
 	PowerTreadsAttribute,
 	TickSleeper
 } from "github.com/octarine-public/wrapper/index"
+
+import { isCreepBlockingActive } from "./coordination"
 
 interface ScheduledSwitch {
 	time: number
@@ -96,6 +98,11 @@ new (class AutoBootsUtility {
 
 		// Auto Phase Boots logic
 		if (this.phaseEnabled.value && !this.phaseSleeper.Sleeping) {
+			// Do not cast if creep blocker is active
+			if (isCreepBlockingActive()) {
+				return
+			}
+
 			// Do not cast if channeling (e.g. TP Scroll or channeling spells)
 			if (hero.IsChanneling) {
 				return
