@@ -13,9 +13,11 @@ import {
 	Menu,
 	ParticleAttachment,
 	ParticlesSDK,
+	RendererSDK,
 	TempTree,
 	TickSleeper,
 	Tree,
+	Vector2,
 	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
@@ -80,7 +82,7 @@ new (class AutoSproutBreaker {
 	private readonly autoWalkOut = this.node.AddToggle(
 		"Auto Walk Out After Cut",
 		true,
-		"Re-issues movement order right after cutting the tree so the hero exits seamlessly"
+		"Queues movement order right after cutting the tree so the hero exits seamlessly"
 	)
 
 	private readonly drawIndicator = this.node.AddToggle(
@@ -94,12 +96,12 @@ new (class AutoSproutBreaker {
 
 	private lastMoveTargetPos: Vector3 | undefined = undefined
 	private lastMoveOrderTime = 0
-	private pendingWalkOutPos: Vector3 | undefined = undefined
-	private pendingWalkOutTime = 0
+	private currentTargetTree: (TempTree | Tree) | undefined = undefined
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
 		EventsSDK.on("PrepareUnitOrders", this.onPrepareUnitOrders.bind(this))
+		EventsSDK.on("Draw", this.OnDraw.bind(this))
 		EventsSDK.on("GameEnded", this.onGameEnded.bind(this))
 		EventsSDK.on("GameStarted", this.onGameEnded.bind(this))
 	}
@@ -112,9 +114,22 @@ new (class AutoSproutBreaker {
 		this.sleeper.ResetTimer()
 		this.lastMoveTargetPos = undefined
 		this.lastMoveOrderTime = 0
-		this.pendingWalkOutPos = undefined
-		this.pendingWalkOutTime = 0
+		this.currentTargetTree = undefined
 		this.pSDK.DestroyAll()
+	}
+
+	private OnDraw(): void {
+		if (!this.hasLocalHero || !this.enabled.value || !this.drawIndicator.value) {
+			return
+		}
+
+		const tree = this.currentTargetTree
+		if (tree && tree.IsValid && tree.IsAlive) {
+			const screenPos = RendererSDK.WorldToScreen(tree.Position)
+			if (screenPos) {
+				RendererSDK.OutlinedCircle(screenPos, new Vector2(36, 36), Color.Green, 2)
+			}
+		}
 	}
 
 	private onPrepareUnitOrders(order: ExecuteOrder): void {
@@ -145,35 +160,16 @@ new (class AutoSproutBreaker {
 
 	private PostDataUpdate(dt: number): void {
 		if (dt === 0 || !this.hasLocalHero || !this.enabled.value) {
+			this.currentTargetTree = undefined
 			this.pSDK.DestroyByKey("sprout_target_tree")
 			return
 		}
 
 		const hero = LocalPlayer?.Hero
 		if (!hero || !hero.IsValid || !hero.IsAlive) {
+			this.currentTargetTree = undefined
 			this.pSDK.DestroyByKey("sprout_target_tree")
 			return
-		}
-
-		// Process pending walk-out movement
-		if (
-			this.pendingWalkOutPos &&
-			GameState.RawGameTime >= this.pendingWalkOutTime &&
-			!hero.IsStunned &&
-			!hero.IsHexed &&
-			!hero.IsChanneling
-		) {
-			const pos = this.pendingWalkOutPos.Clone()
-			this.pendingWalkOutPos = undefined
-			claimOrder()
-			ExecuteOrder.PrepareOrder({
-				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-				issuers: [hero],
-				position: pos,
-				queue: false,
-				showEffects: true,
-				isPlayerInput: false
-			})
 		}
 
 		if (this.sleeper.lastSleepTickCount > (GameState.RawGameTime + 60) * 1000) {
@@ -187,6 +183,7 @@ new (class AutoSproutBreaker {
 		// 1. Check if hero has a usable tree-cutting tool
 		const cutTool = this.getUsableCutItem(hero)
 		if (!cutTool) {
+			this.currentTargetTree = undefined
 			this.pSDK.DestroyByKey("sprout_target_tree")
 			return
 		}
@@ -194,6 +191,7 @@ new (class AutoSproutBreaker {
 		// 2. Query nearby candidate trees (<= 350 units)
 		const allNearbyTrees = this.getNearbyTrees(hero, 350)
 		if (allNearbyTrees.length === 0) {
+			this.currentTargetTree = undefined
 			this.pSDK.DestroyByKey("sprout_target_tree")
 			return
 		}
@@ -201,11 +199,14 @@ new (class AutoSproutBreaker {
 		// 3. Find the best tree to cut (Sprout, Hoodwink Acorn, or Branch)
 		const targetTree = this.findTargetTree(hero, allNearbyTrees, cutTool.castRange)
 		if (!targetTree) {
+			this.currentTargetTree = undefined
 			this.pSDK.DestroyByKey("sprout_target_tree")
 			return
 		}
 
-		// 4. Visual Indicator
+		this.currentTargetTree = targetTree
+
+		// 4. Visual Indicator (particles)
 		if (this.drawIndicator.value) {
 			this.pSDK.DrawCircle("sprout_target_tree", targetTree as Entity, 75, {
 				Color: new Color(50, 255, 100, 240),
@@ -217,26 +218,17 @@ new (class AutoSproutBreaker {
 
 		// 5. Execute Cut Order
 		claimOrder()
-		ExecuteOrder.PrepareOrder({
-			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET_TREE,
-			issuers: [hero],
-			target: targetTree as Entity,
-			ability: cutTool.item.Index,
-			queue: false,
-			showEffects: true,
-			isPlayerInput: false
-		})
+		hero.CastTargetTree(cutTool.item, targetTree, false, true)
 
-		this.sleeper.Sleep(GameState.InputLag * 1000 + 200)
-
-		// 6. Schedule walk out in original direction
+		// 6. Queue walk out in original direction
 		if (this.autoWalkOut.value) {
 			const walkTarget = this.getWalkOutTarget(hero, targetTree)
 			if (walkTarget) {
-				this.pendingWalkOutPos = walkTarget
-				this.pendingWalkOutTime = GameState.RawGameTime + 0.12
+				hero.MoveTo(walkTarget, true, true)
 			}
 		}
+
+		this.sleeper.Sleep(GameState.InputLag * 1000 + 250)
 	}
 
 	private findTargetTree(
@@ -257,7 +249,7 @@ new (class AutoSproutBreaker {
 			}
 		}
 
-		// 3. Enemy Ironwood Branch Tree Check (Single TempTree within 200 units blocking path)
+		// 3. Enemy Ironwood Branch Tree Check (Single TempTree within 220 units blocking path)
 		if (this.cutIronwoodBranch.value) {
 			const branchTree = this.findBlockingBranchTree(hero, nearbyTrees, maxRange)
 			if (branchTree) {
@@ -280,8 +272,9 @@ new (class AutoSproutBreaker {
 			return undefined
 		}
 
-		// Look for any TempTree within 350 units of hero (Bushwhack danger radius is 265)
-		const candidateAcorns = nearbyTrees.filter(t => t.IsTempTree && hero.Distance2D(t) <= Math.min(maxRange, 350))
+		// Look for any TempTree within range (Bushwhack danger radius is 265)
+		const effectiveRange = Math.max(maxRange, 350)
+		const candidateAcorns = nearbyTrees.filter(t => t.IsTempTree && hero.Distance2D(t) <= effectiveRange)
 
 		if (candidateAcorns.length === 0) {
 			return undefined
@@ -296,7 +289,8 @@ new (class AutoSproutBreaker {
 		nearbyTrees: (TempTree | Tree)[],
 		maxRange: number
 	): TempTree | Tree | undefined {
-		const tempTrees = nearbyTrees.filter(t => t.IsTempTree && hero.Distance2D(t) <= Math.min(maxRange, 200))
+		const effectiveRange = Math.max(maxRange, 220)
+		const tempTrees = nearbyTrees.filter(t => t.IsTempTree && hero.Distance2D(t) <= effectiveRange)
 		if (tempTrees.length === 0) {
 			return undefined
 		}
@@ -326,6 +320,7 @@ new (class AutoSproutBreaker {
 				item.CanBeUsable &&
 				!hero.IsMuted &&
 				item.Cooldown <= 0.1 &&
+				(!item.RequiresCharges || item.CurrentCharges > 0) &&
 				hero.Mana >= item.ManaCost
 			) {
 				const castRange = item.CastRange > 0 ? item.CastRange : itemName.startsWith("item_tango") ? 165 : 450
@@ -349,7 +344,7 @@ new (class AutoSproutBreaker {
 	}
 
 	private isTrappedBySprout(hero: Hero, nearbyTrees: (TempTree | Tree)[]): boolean {
-		// 1. Sprout debuffs check on hero
+		// 1. Sprout debuffs check on hero (Blind facet, tether, etc.)
 		const hasSproutDebuff = hero.Buffs.some(
 			b =>
 				b.IsValid &&
@@ -361,27 +356,29 @@ new (class AutoSproutBreaker {
 					b.Name === "modifier_furion_sprout_marker")
 		)
 
-		// 2. Count Sprout TempTrees strictly within 230 units of hero or within 200 units of CircleCenter
-		const sproutTrees = nearbyTrees.filter(t => {
-			if (!t.IsTempTree) {
-				return false
-			}
-			const distToHero = hero.Distance2D(t)
-			if (distToHero > 250) {
-				return false
-			}
-			if (t instanceof TempTree && t.CircleCenter.IsValid && t.CircleCenter.Length2D > 10) {
-				return hero.Distance2D(t.CircleCenter) <= 220
-			}
-			return distToHero <= 220
-		})
+		// 2. Count Sprout TempTrees near hero (Sprout spawns 8 trees in 150 radius ring)
+		const sproutTrees = nearbyTrees.filter(t => t.IsTempTree && hero.Distance2D(t) <= 260)
 
 		if (hasSproutDebuff && sproutTrees.length > 0) {
 			return true
 		}
 
-		if (sproutTrees.length >= 3) {
-			return true
+		if (sproutTrees.length >= 2) {
+			// Calculate centroid of sprout trees to confirm hero is trapped inside or adjacent
+			let sumX = 0
+			let sumY = 0
+			for (const t of sproutTrees) {
+				sumX += t.Position.x
+				sumY += t.Position.y
+			}
+			const centerX = sumX / sproutTrees.length
+			const centerY = sumY / sproutTrees.length
+			const distHeroToCenter = Math.hypot(hero.Position.x - centerX, hero.Position.y - centerY)
+
+			// Hero trapped inside a 150-radius sprout circle is within ~180 units of the ring center
+			if (distHeroToCenter <= 180 || sproutTrees.length >= 4) {
+				return true
+			}
 		}
 
 		// Only if user explicitly enabled cutting normal map trees AND hero is completely enclosed
@@ -426,8 +423,9 @@ new (class AutoSproutBreaker {
 	}
 
 	private findBestTreeToCut(hero: Hero, trees: (TempTree | Tree)[], maxRange: number): TempTree | Tree | undefined {
-		// Only consider trees that are within Sprout distance (<= 230 units)
-		const candidateTrees = trees.filter(t => hero.Distance2D(t) <= Math.min(maxRange, 230))
+		// Candidate trees: always include all Sprout trees within 260 units, or maxRange if larger (e.g. Quelling Blade 350+)
+		const effectiveRange = Math.max(maxRange, 260)
+		const candidateTrees = trees.filter(t => hero.Distance2D(t) <= effectiveRange)
 		if (candidateTrees.length === 0) {
 			return undefined
 		}
