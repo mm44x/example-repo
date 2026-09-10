@@ -38,6 +38,10 @@ const COMBO_ITEMS = [
 	"item_abyssal_blade",
 	"item_diffusal_blade",
 	"item_disperser",
+	"item_ethereal_blade",
+	"item_essence_distiller",
+	"item_spirit_vessel",
+	"item_urn_of_shadows",
 	"item_manta",
 	"item_nullifier",
 	"item_bloodthorn",
@@ -117,6 +121,10 @@ new (class JuggernautCombo {
 			["item_abyssal_blade", true],
 			["item_diffusal_blade", true],
 			["item_disperser", true],
+			["item_ethereal_blade", true],
+			["item_essence_distiller", true],
+			["item_spirit_vessel", true],
+			["item_urn_of_shadows", true],
 			["item_manta", true],
 			["item_nullifier", true],
 			["item_bloodthorn", true],
@@ -388,9 +396,11 @@ new (class JuggernautCombo {
 			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
 		})
 
+		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
+
 		// 4. If currently in Omnislash or Swiftslash, execute items only, do not issue move/attack orders
 		if (this.isSlashing(hero)) {
-			this.executeOffensiveItems(hero, bestTarget, true)
+			this.executeOffensiveItems(hero, bestTarget, isTargetImmune)
 			return
 		}
 
@@ -403,8 +413,6 @@ new (class JuggernautCombo {
 		if (this.sleeper.Sleeping) {
 			return
 		}
-
-		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
 		// 6. Execute Gap Closers & Items
 		if (this.executeItems(hero, bestTarget, isTargetImmune)) {
@@ -750,7 +758,86 @@ new (class JuggernautCombo {
 						isPlayerInput: false
 					})
 					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+					return
 				}
+			}
+		}
+
+		// 6. ETHEREAL BLADE (Amplifies Blade Fury Magic Damage + Massive Slow)
+		if (this.itemsSelector.IsEnabled("item_ethereal_blade") && !isTargetImmune && dist <= 800) {
+			const eblade = this.getItem(hero, "item_ethereal_blade")
+			if (
+				eblade &&
+				eblade.Cooldown <= 0.1 &&
+				hero.Mana >= eblade.ManaCost &&
+				!target.HasBuffByName("modifier_item_ethereal_blade_ethereal") &&
+				!target.HasBuffByName("modifier_item_ethereal_blade")
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: target.Index,
+					ability: eblade.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return
+			}
+		}
+
+		// 7. ESSENCE DISTILLER (Ground Target)
+		if (this.itemsSelector.IsEnabled("item_essence_distiller")) {
+			const distiller = this.getItem(hero, "item_essence_distiller")
+			if (distiller && distiller.Cooldown <= 0.1 && hero.Mana >= distiller.ManaCost) {
+				const castRange = distiller.CastRange > 0 ? distiller.CastRange : 750
+				if (dist <= castRange + 150) {
+					const castPos = target.IsMoving ? target.InFront(60) : target.Position.Clone()
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: castPos,
+						ability: distiller.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+					return
+				}
+			}
+		}
+
+		// 8. URN OF SHADOWS / SPIRIT VESSEL
+		if (
+			(this.itemsSelector.IsEnabled("item_spirit_vessel") ||
+				this.itemsSelector.IsEnabled("item_urn_of_shadows")) &&
+			!isTargetImmune &&
+			dist <= 950
+		) {
+			const vessel = this.getItem(hero, "item_spirit_vessel") || this.getItem(hero, "item_urn_of_shadows")
+			if (
+				vessel &&
+				vessel.Cooldown <= 0.1 &&
+				vessel.CurrentCharges > 0 &&
+				hero.Mana >= vessel.ManaCost &&
+				!target.HasBuffByName("modifier_item_spirit_vessel_damage") &&
+				!target.HasBuffByName("modifier_item_urn_damage")
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: target.Index,
+					ability: vessel.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
 			}
 		}
 	}
@@ -956,6 +1043,90 @@ new (class JuggernautCombo {
 					issuers: [hero],
 					target: bestTarget.Index,
 					ability: orchid.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// ETHEREAL BLADE (Do not use during Omnislash/Swiftslash to avoid physical attack immunity)
+		if (
+			this.itemsSelector.IsEnabled("item_ethereal_blade") &&
+			!isTargetImmune &&
+			!this.isSlashing(hero) &&
+			dist <= 800
+		) {
+			const eblade = this.getItem(hero, "item_ethereal_blade")
+			if (
+				eblade &&
+				eblade.Cooldown <= 0.1 &&
+				hero.Mana >= eblade.ManaCost &&
+				!bestTarget.HasBuffByName("modifier_item_ethereal_blade_ethereal") &&
+				!bestTarget.HasBuffByName("modifier_item_ethereal_blade")
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: eblade.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return true
+			}
+		}
+
+		// ESSENCE DISTILLER (Ground Target - Armor reduction & damage)
+		if (this.itemsSelector.IsEnabled("item_essence_distiller")) {
+			const distiller = this.getItem(hero, "item_essence_distiller")
+			if (distiller && distiller.Cooldown <= 0.1 && hero.Mana >= distiller.ManaCost) {
+				const castRange = distiller.CastRange > 0 ? distiller.CastRange : 750
+				if (dist <= castRange + 150) {
+					const castPos = bestTarget.IsMoving ? bestTarget.InFront(60) : bestTarget.Position.Clone()
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: castPos,
+						ability: distiller.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+					return true
+				}
+			}
+		}
+
+		// URN OF SHADOWS / SPIRIT VESSEL
+		if (
+			(this.itemsSelector.IsEnabled("item_spirit_vessel") ||
+				this.itemsSelector.IsEnabled("item_urn_of_shadows")) &&
+			!isTargetImmune &&
+			dist <= 950
+		) {
+			const vessel = this.getItem(hero, "item_spirit_vessel") || this.getItem(hero, "item_urn_of_shadows")
+			if (
+				vessel &&
+				vessel.Cooldown <= 0.1 &&
+				vessel.CurrentCharges > 0 &&
+				hero.Mana >= vessel.ManaCost &&
+				!bestTarget.HasBuffByName("modifier_item_spirit_vessel_damage") &&
+				!bestTarget.HasBuffByName("modifier_item_urn_damage")
+			) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: bestTarget.Index,
+					ability: vessel.Index,
 					queue: false,
 					showEffects: true,
 					isPlayerInput: false
