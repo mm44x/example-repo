@@ -123,7 +123,7 @@ new (class CreepLaneBlocker {
 			return
 		}
 
-		// Render the Locked Target Creep (Green)
+		// Render the Furthest / Locked Target Creep (Green)
 		if (this.lockedCreep && this.lockedCreep.IsValid && this.lockedCreep.IsAlive) {
 			const creepScreen = RendererSDK.WorldToScreen(this.lockedCreep.Position)
 			if (creepScreen) {
@@ -257,101 +257,88 @@ new (class CreepLaneBlocker {
 		const laneDir = this.smoothedLaneDir
 		const lanePerp = new Vector3(-laneDir.y, laneDir.x, 0)
 
-		// 4. Select Target Creep with Hysteresis (Prevents target-switching flutter!)
-		let bestCreep: Creep | undefined
-		let maxProgress = -Infinity
+		// 4. Find the Absolute Furthest Creep in the wave
+		let furthestCreep: Creep | undefined
+		let maxCreepProg = -Infinity
 
 		for (const c of allyCreeps) {
 			const prog = c.Position.x * laneDir.x + c.Position.y * laneDir.y
-			if (prog > maxProgress) {
-				maxProgress = prog
-				bestCreep = c
+			if (prog > maxCreepProg) {
+				maxCreepProg = prog
+				furthestCreep = c
 			}
 		}
 
-		if (!bestCreep) {
+		if (!furthestCreep) {
 			this.resetBlockState()
 			return
 		}
 
-		// Hysteresis: Keep locked onto current creep if it is still within 30 units of the leader
-		if (
-			this.lockedCreep &&
-			this.lockedCreep.IsValid &&
-			this.lockedCreep.IsAlive &&
-			!this.lockedCreep.IsWaitingToSpawn &&
-			this.lockedCreep.Distance2D(hero) <= this.searchRadius.value
-		) {
-			const lockedProg = this.lockedCreep.Position.x * laneDir.x + this.lockedCreep.Position.y * laneDir.y
-			if (maxProgress - lockedProg <= 30) {
-				bestCreep = this.lockedCreep
-			}
-		}
+		this.lockedCreep = furthestCreep
 
-		this.lockedCreep = bestCreep
+		// 5. Calculate Hero's Forward Progress vs the Wave's Furthest Creep
+		const heroProg = hero.Position.x * laneDir.x + hero.Position.y * laneDir.y
+		const leadDelta = heroProg - maxCreepProg
 
-		// 5. Geometry relative to target lead creep
-		const toHero = hero.Position.Subtract(bestCreep.Position)
+		// Lateral offset of hero relative to the furthest creep
+		const toHero = hero.Position.Subtract(furthestCreep.Position)
 		toHero.SetZ(0)
-
-		const fwdDist = toHero.x * laneDir.x + toHero.y * laneDir.y
-		const latDist = toHero.x * lanePerp.x + toHero.y * lanePerp.y
+		const latDiff = toHero.x * lanePerp.x + toHero.y * lanePerp.y
 
 		claimOrder()
 		setCreepBlockingActive(true)
 		this.isCurrentlyBlocking = true
 
 		// =========================================================================
-		// SCENARIO 1: OVERTAKE (Hero is behind or pressing into creep's rear hull)
-		// fwdDist < 35: Hero CANNOT walk through the creep's back!
-		// Move FORWARD along the lane while shifting laterally to clear the creep hull!
+		// SCENARIO 1: OVERTAKE (Hero is behind ANY creep in the wave! leadDelta < 32)
+		// At least one creep is ahead of the hero or right at hero's level.
+		// Hero CANNOT stop! Hero MUST sprint at full movespeed with boots!
+		// Flank with 42 units clearance so hero runs freely alongside without hull drag.
 		// =========================================================================
-		if (fwdDist < 35) {
+		if (leadDelta < 32) {
 			this.isStopped = false
-			// Desired flank is 38 units to the open side (relative to creep)
-			const flankSide = latDist >= 0 ? 1 : -1
-			const desiredLatOffset = flankSide * 38 - latDist
-			const overtakePos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 45, desiredLatOffset, 25)
+			const flankSide = latDiff >= 0 ? 1 : -1
+			const desiredLatOffset = flankSide * 42 - latDiff
+			const overtakePos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 50, desiredLatOffset, 25)
 
 			this.targetBlockPos = overtakePos.Clone()
 			hero.MoveTo(overtakePos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 70)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
 			return
 		}
 
 		// =========================================================================
-		// SCENARIO 2: CUTTING IN (Hero is ahead, but laterally off the creep's path)
-		// fwdDist >= 35, but |latDist| > 16:
-		// Step FORWARD and INWARD into the creep's path! NEVER step backwards!
+		// SCENARIO 2: CUTTING IN (Hero is ahead of entire wave, but off to the side)
+		// leadDelta >= 32, but |latDiff| > 18:
+		// Step forward and inward into the lead creep's path!
 		// =========================================================================
-		if (Math.abs(latDist) > 16) {
+		if (Math.abs(latDiff) > 18) {
 			this.isStopped = false
-			const inwardPull = -latDist * 0.7
+			const inwardPull = -latDiff * 0.7
 			const cutInPos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 28, inwardPull, 24)
 
 			this.targetBlockPos = cutInPos.Clone()
 			hero.MoveTo(cutInPos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 65)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 55)
 			return
 		}
 
 		// =========================================================================
-		// SCENARIO 3: HERO IS TOO FAR AHEAD (fwdDist > 65 and |latDist| <= 16)
-		// Hero is ahead on the creep's line of march.
-		// Stand still in the creep's path and wait for the creep to bump us!
+		// SCENARIO 3: HERO IS TOO FAR AHEAD (leadDelta > 65 and |latDiff| <= 18)
+		// Stand still in the lead creep's path and wait for it to bump hero's back!
 		// =========================================================================
-		if (fwdDist > 65) {
+		if (leadDelta > 65) {
 			this.isStopped = true
 			this.targetBlockPos = hero.Position.Clone()
 			hero.OrderStop(false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 90)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
 			return
 		}
 
 		// =========================================================================
-		// SCENARIO 4: ACTIVE BODY BLOCKING (35 <= fwdDist <= 65 and |latDist| <= 16)
-		// Hero is squarely in front of the lead creep!
-		// Authentic human cadence: Stop (120ms) -> Micro-step (100ms)
+		// SCENARIO 4: ACTIVE BODY BLOCKING (32 <= leadDelta <= 65 and |latDiff| <= 18)
+		// Hero is safely in front of the entire wave, squarely blocking the leader!
+		// Rhythmic pro Stop-and-Go: Stop (120ms) -> Micro-step (90ms)
 		// =========================================================================
 		if (this.isStopped) {
 			// Hero was stopped, creep has bumped into hero's back!
@@ -359,12 +346,12 @@ new (class CreepLaneBlocker {
 			this.isStopped = false
 			this.zigzagSide = -this.zigzagSide
 
-			const lateralWeave = this.zigzagSide * 6 - latDist * 0.3
+			const lateralWeave = this.zigzagSide * 6 - latDiff * 0.3
 			const stepPos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 24, lateralWeave, 15)
 
 			this.targetBlockPos = stepPos.Clone()
 			hero.MoveTo(stepPos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 100)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 90)
 		} else {
 			// Hero was moving, now tap S (OrderStop) to halt and let creep bump!
 			this.isStopped = true
