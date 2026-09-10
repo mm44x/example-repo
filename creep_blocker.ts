@@ -146,6 +146,26 @@ new (class CreepLaneBlocker {
 		}
 	}
 
+	/**
+	 * Mathematically guarantees that any movement vector from hero.Position
+	 * ALWAYS has a positive forward component along the lane direction,
+	 * with the lateral turning angle strictly clamped to maxAngleDeg (default 24°).
+	 * This makes it impossible for the hero to face backwards or turn > 90°.
+	 */
+	private getForwardTarget(
+		heroPos: Vector3,
+		laneDir: Vector3,
+		lanePerp: Vector3,
+		stepFwd: number,
+		desiredLat: number,
+		maxAngleDeg = 24
+	): Vector3 {
+		const fwd = Math.max(stepFwd, 20)
+		const maxLat = fwd * Math.tan((maxAngleDeg * Math.PI) / 180)
+		const lat = Math.max(-maxLat, Math.min(maxLat, desiredLat))
+		return heroPos.Add(laneDir.MultiplyScalar(fwd)).Add(lanePerp.MultiplyScalar(lat))
+	}
+
 	private PostDataUpdate(dt: number): void {
 		if (dt === 0 || !this.hasLocalHero || !this.enabled.value || ExecuteOrder.DisableHumanizer) {
 			this.resetBlockState()
@@ -283,15 +303,15 @@ new (class CreepLaneBlocker {
 
 		// =========================================================================
 		// SCENARIO 1: OVERTAKE (Hero is behind or pressing into creep's rear hull)
-		// Hero CANNOT walk through the creep's back! ("tidak menyundul pantat creep")
-		// Steer 44 units to the side to run alongside the creep at full movespeed!
+		// fwdDist < 35: Hero CANNOT walk through the creep's back!
+		// Move FORWARD along the lane while shifting laterally to clear the creep hull!
 		// =========================================================================
-		if (fwdDist < 32) {
+		if (fwdDist < 35) {
 			this.isStopped = false
+			// Desired flank is 38 units to the open side (relative to creep)
 			const flankSide = latDist >= 0 ? 1 : -1
-			const overtakePos = bestCreep.Position.Add(laneDir.MultiplyScalar(55)).Add(
-				lanePerp.MultiplyScalar(flankSide * 44)
-			)
+			const desiredLatOffset = flankSide * 38 - latDist
+			const overtakePos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 45, desiredLatOffset, 25)
 
 			this.targetBlockPos = overtakePos.Clone()
 			hero.MoveTo(overtakePos, false, false)
@@ -301,19 +321,23 @@ new (class CreepLaneBlocker {
 
 		// =========================================================================
 		// SCENARIO 2: CUTTING IN (Hero is ahead, but laterally off the creep's path)
-		// fwdDist >= 32, but |latDist| > 20: Step directly in front of the creep!
+		// fwdDist >= 35, but |latDist| > 16:
+		// Step FORWARD and INWARD into the creep's path! NEVER step backwards!
 		// =========================================================================
-		if (Math.abs(latDist) > 20) {
+		if (Math.abs(latDist) > 16) {
 			this.isStopped = false
-			const interceptPos = bestCreep.Position.Add(laneDir.MultiplyScalar(40))
-			this.targetBlockPos = interceptPos.Clone()
-			hero.MoveTo(interceptPos, false, false)
+			const inwardPull = -latDist * 0.7
+			const cutInPos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 28, inwardPull, 24)
+
+			this.targetBlockPos = cutInPos.Clone()
+			hero.MoveTo(cutInPos, false, false)
 			this.sleeper.Sleep(GameState.InputLag * 1000 + 65)
 			return
 		}
 
 		// =========================================================================
-		// SCENARIO 3: HERO IS TOO FAR AHEAD (fwdDist > 65 and |latDist| <= 20)
+		// SCENARIO 3: HERO IS TOO FAR AHEAD (fwdDist > 65 and |latDist| <= 16)
+		// Hero is ahead on the creep's line of march.
 		// Stand still in the creep's path and wait for the creep to bump us!
 		// =========================================================================
 		if (fwdDist > 65) {
@@ -325,19 +349,18 @@ new (class CreepLaneBlocker {
 		}
 
 		// =========================================================================
-		// SCENARIO 4: ACTIVE BODY BLOCKING (32 <= fwdDist <= 65 and |latDist| <= 20)
-		// Hero is directly in front of the lead creep!
-		// Natural, smooth human cadence: Stop (120ms) -> Micro-step (100ms)
+		// SCENARIO 4: ACTIVE BODY BLOCKING (35 <= fwdDist <= 65 and |latDist| <= 16)
+		// Hero is squarely in front of the lead creep!
+		// Authentic human cadence: Stop (120ms) -> Micro-step (100ms)
 		// =========================================================================
 		if (this.isStopped) {
 			// Hero was stopped, creep has bumped into hero's back!
-			// Take a micro-step forward down the lane with subtle lateral weave (8 units)
+			// Take a micro-step forward down the lane with subtle lateral weave (6 units)
 			this.isStopped = false
 			this.zigzagSide = -this.zigzagSide
 
-			const stepPos = hero.Position.Add(laneDir.MultiplyScalar(26)).Add(
-				lanePerp.MultiplyScalar(this.zigzagSide * 8)
-			)
+			const lateralWeave = this.zigzagSide * 6 - latDist * 0.3
+			const stepPos = this.getForwardTarget(hero.Position, laneDir, lanePerp, 24, lateralWeave, 15)
 
 			this.targetBlockPos = stepPos.Clone()
 			hero.MoveTo(stepPos, false, false)
