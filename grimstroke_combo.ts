@@ -212,6 +212,7 @@ new (class GrimstrokeCombo {
 	private lastSeenTargetDir: Vector3 | undefined = undefined
 	private lastSeenTargetSpeed = 300
 	private lastSeenTargetTime = 0
+	private wasTargetStationary = false
 
 	// Illusion references for drawing
 	private currentAttackerIllusion: Hero | undefined = undefined
@@ -262,6 +263,7 @@ new (class GrimstrokeCombo {
 		this.lastSeenTargetDir = undefined
 		this.lastSeenTargetSpeed = 300
 		this.lastSeenTargetTime = 0
+		this.wasTargetStationary = false
 		this.currentAttackerIllusion = undefined
 		this.currentBlockerIllusion = undefined
 		this.pSDK.DestroyAll()
@@ -399,7 +401,8 @@ new (class GrimstrokeCombo {
 					this.currentBlockerIllusion.Position.Add(new Vector3(0, 0, 80))
 				)
 				if (screenPos) {
-					RendererSDK.Text("Body Blocker", screenPos, Color.Yellow, "Arial", 14)
+					const label = this.wasTargetStationary ? "Blocker (Hit)" : "Body Blocker"
+					RendererSDK.Text(label, screenPos, Color.Yellow, "Arial", 14)
 				}
 			}
 		}
@@ -844,14 +847,36 @@ new (class GrimstrokeCombo {
 
 		const targetIsMoving = target.IsMoving && target.MoveSpeed > 50 && !target.IsStunned && !target.IsRooted
 
+		// JIKA MUSUH DIAM / STUNNED / ROOTED:
+		// Ilusi B (Blocker) ikut memukul (hit) musuh!
 		if (!targetIsMoving) {
+			this.wasTargetStationary = true
 			this.lastBlockerTargetDir = undefined
+			this.currentBlockTargetPos = undefined
+
 			if (this.illusionBlockSleeper.Sleeping) {
 				return
 			}
-			this.currentBlockTargetPos = target.Position.Clone()
-			this.issueIllusionMove(illusion, this.currentBlockTargetPos, 60)
+
+			claimOrder()
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET,
+				issuers: [illusion],
+				target: target.Index,
+				queue: false,
+				showEffects: false,
+				isPlayerInput: false
+			})
+
+			this.illusionBlockSleeper.Sleep(GameState.InputLag * 1000 + 150)
 			return
+		}
+
+		// Jika musuh sebelumnya diam lalu baru mulai bergerak:
+		// Reset timer seketika agar Ilusi B langsung menyalip dan mem-block tanpa delay!
+		if (this.wasTargetStationary) {
+			this.wasTargetStationary = false
+			this.illusionBlockSleeper.ResetTimer()
 		}
 
 		// 1. Resolve Target Movement Direction
