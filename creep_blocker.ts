@@ -148,8 +148,9 @@ new (class CreepLaneBlocker {
 
 	/**
 	 * Computes a destination that is strictly in front of the hero along the lane direction,
-	 * mathematically clamping the turning angle to at most maxAngleDeg (default 30°).
-	 * This prevents the hero from ever turning backwards or rotating > 90°, eliminating turn-rate delay.
+	 * mathematically clamping the turning angle to at most maxAngleDeg (tight cone <= 15°).
+	 * This guarantees the hero never veers into the side of the lane, never turns backwards,
+	 * and eliminates turn-rate deceleration completely.
 	 */
 	private getForwardConeTarget(
 		heroPos: Vector3,
@@ -157,7 +158,7 @@ new (class CreepLaneBlocker {
 		lanePerp: Vector3,
 		desiredFwd: number,
 		desiredLat: number,
-		maxAngleDeg = 30
+		maxAngleDeg = 14
 	): Vector3 {
 		// Forward step must strictly be positive down the lane
 		const fwd = Math.max(desiredFwd, 20)
@@ -254,7 +255,7 @@ new (class CreepLaneBlocker {
 		// Exponential smoothing to prevent direction twitching
 		this.smoothedLaneDir = !this.smoothedLaneDir
 			? rawLaneDir.Clone()
-			: this.smoothedLaneDir.MultiplyScalar(0.8).Add(rawLaneDir.MultiplyScalar(0.2)).Normalize()
+			: this.smoothedLaneDir.MultiplyScalar(0.85).Add(rawLaneDir.MultiplyScalar(0.15)).Normalize()
 
 		const laneDir = this.smoothedLaneDir
 		const lanePerp = new Vector3(-laneDir.y, laneDir.x, 0)
@@ -313,65 +314,69 @@ new (class CreepLaneBlocker {
 		this.isCurrentlyBlocking = true
 
 		// =========================================================================
-		// CASE 1: HERO IS BEHIND / BEING OVERTAKEN (forwardDist < 36)
+		// CASE 1: HERO IS LEGITIMATELY BEHIND THE WAVE (forwardDist <= 0)
 		// =========================================================================
-		// Hero is being pushed or fell behind the front creeps.
-		// NEVER call Stop here! We must accelerate forward down the lane.
-		if (forwardDist < 36) {
+		// The creeps have passed the hero completely. Sprint straight forward down the lane.
+		// No 30° sideways veering! Run straight down the lane corridor.
+		if (forwardDist <= 0) {
 			this.lastActionWasStop = false
-
-			// If deeply behind the wave, flank slightly to sprint past without hull drag
-			if (forwardDist < 15) {
-				const flankSide = lateralDist >= 0 ? 1 : -1
-				const flankTarget = this.getForwardConeTarget(hero.Position, laneDir, lanePerp, 55, flankSide * 28, 28)
-				this.targetBlockPos = flankTarget.Clone()
-				hero.MoveTo(flankTarget, false, false)
-				this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
-				return
-			}
-
-			// In contact/pushing: surge forward down the lane to regain the buffer
-			const surgeTarget = this.getForwardConeTarget(hero.Position, laneDir, lanePerp, 45, -lateralDist * 0.3, 20)
-			this.targetBlockPos = surgeTarget.Clone()
-			hero.MoveTo(surgeTarget, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 55)
+			const catchUpTarget = centroid.Add(laneDir.MultiplyScalar(50))
+			this.targetBlockPos = catchUpTarget.Clone()
+			hero.MoveTo(catchUpTarget, false, false)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
 			return
 		}
 
 		// =========================================================================
-		// CASE 2: HERO IS TOO FAR AHEAD (forwardDist > 65)
+		// CASE 2: HERO IN PHYSICAL CONTACT / BEING PUSHED (0 < forwardDist < 34)
 		// =========================================================================
-		// Hero is outrunning the creeps. Stop and wait for them to bump our back.
-		if (forwardDist > 65) {
-			// If laterally off-center (> 14 units), step diagonally onto the centerline while moving forward
-			if (Math.abs(lateralDist) > 14) {
+		// Hero is right in front of creeps and being bumped/pushed.
+		// DO NOT STOP! And DO NOT VEER SIDEWAYS!
+		// Take a micro-step STRAIGHT FORWARD down the lane (angle <= 10°) to re-establish the buffer.
+		if (forwardDist < 34) {
+			this.lastActionWasStop = false
+			const centerPull = -lateralDist * 0.5
+			const surgeTarget = this.getForwardConeTarget(hero.Position, laneDir, lanePerp, 30, centerPull, 10)
+			this.targetBlockPos = surgeTarget.Clone()
+			hero.MoveTo(surgeTarget, false, false)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
+			return
+		}
+
+		// =========================================================================
+		// CASE 3: HERO IS TOO FAR AHEAD (forwardDist > 58)
+		// =========================================================================
+		// Hero opened up a gap.
+		// If off-center (> 10 units), take a tiny step towards center (angle <= 12°).
+		if (forwardDist > 58) {
+			if (Math.abs(lateralDist) > 10) {
 				this.lastActionWasStop = false
 				const alignTarget = this.getForwardConeTarget(
 					hero.Position,
 					laneDir,
 					lanePerp,
-					25,
+					20,
 					-lateralDist * 0.5,
-					24
+					12
 				)
 				this.targetBlockPos = alignTarget.Clone()
 				hero.MoveTo(alignTarget, false, false)
-				this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 45)
 				return
 			}
 
-			// Directly in their line of march: STOP and let them run into our back
+			// In line with creeps: STOP and wait for them to run into our back
 			this.lastActionWasStop = true
 			this.targetBlockPos = hero.Position.Clone()
 			hero.OrderStop(false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 70)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 65)
 			return
 		}
 
 		// =========================================================================
-		// CASE 3: ACTIVE PRO ZIGZAG & S-STOP BODY BLOCK ZONE (36 <= forwardDist <= 65)
+		// CASE 4: ACTIVE PRO ZIGZAG & S-STOP BODY BLOCK ZONE (34 <= forwardDist <= 58)
 		// =========================================================================
-		// 3A. Slip Detection: Check if any front creep is sneaking around our flank
+		// 4A. Slip Detection: Check if any front creep is sneaking around our flank
 		let slippingCreepOffset = 0
 		for (const c of frontlineCreeps) {
 			const cToCentroid = c.Position.Subtract(centroid)
@@ -391,44 +396,44 @@ new (class CreepLaneBlocker {
 			}
 		}
 
-		// If a creep is slipping around a side, step forward-diagonally to cut it off (shut the door)
+		// If a creep is slipping around a side, step forward-diagonally with angle <= 16° to cut it off
 		if (slippingCreepOffset !== 0) {
 			this.lastActionWasStop = false
 			const cutOffTarget = this.getForwardConeTarget(
 				hero.Position,
 				laneDir,
 				lanePerp,
-				35,
+				28,
 				slippingCreepOffset - lateralDist,
-				30
+				16
 			)
 			this.targetBlockPos = cutOffTarget.Clone()
 			hero.MoveTo(cutOffTarget, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 45)
 			return
 		}
 
-		// 3B. Pro Zigzag & S-Stop Rhythm:
+		// 4B. Pro Zigzag & S-Stop Rhythm:
 		// Alternate between:
 		// 1) OrderStop (S-tap) -> creeps bump into hero's back and stutter-step
-		// 2) Micro-step forward-zigzag (<= 30° cone) -> sweeps a wall across the wave
+		// 2) Micro-step forward-zigzag (angle <= 14°) -> subtle 8-unit lateral weave in lane center
 		if (this.lastActionWasStop) {
 			// Previous action was STOP -> take a micro-step forward & zigzag
 			this.lastActionWasStop = false
 			this.zigzagSide = -this.zigzagSide // Flip lateral side: left <-> right
 
-			// Desired lateral offset: zigzag offset + slight pull towards lane center
-			const centerPull = -lateralDist * 0.35
-			const desiredLat = this.zigzagSide * 16 + centerPull
+			// Tight lateral wiggle (8 units) with center pull
+			const centerPull = -lateralDist * 0.4
+			const desiredLat = this.zigzagSide * 8 + centerPull
 
-			// Forward-cone target: angle mathematically clamped <= 28° (total swing <= 56° << 90°)
-			const stepTarget = this.getForwardConeTarget(hero.Position, laneDir, lanePerp, 35, desiredLat, 28)
+			// Strictly clamped <= 14° forward cone (total swing <= 28° << 90°)
+			const stepTarget = this.getForwardConeTarget(hero.Position, laneDir, lanePerp, 28, desiredLat, 14)
 
 			this.targetBlockPos = stepTarget.Clone()
 			hero.MoveTo(stepTarget, false, false)
 
 			// Micro-step sleep duration based on hero move speed
-			const stepMs = Math.round(Math.max(45, Math.min(70, (20 / Math.max(heroSpeed, 250)) * 1000)))
+			const stepMs = Math.round(Math.max(40, Math.min(65, (18 / Math.max(heroSpeed, 250)) * 1000)))
 			this.sleeper.Sleep(GameState.InputLag * 1000 + stepMs)
 		} else {
 			// Previous action was MOVE -> tap S (OrderStop) to halt and block
@@ -436,7 +441,7 @@ new (class CreepLaneBlocker {
 
 			// Dynamic stop duration: allows creep to bump solidly into hero's rear hull
 			const timeToImpactMs = Math.max(0, ((forwardDist - contactThreshold) / creepSpeed) * 1000)
-			const dynamicStopMs = Math.round(Math.max(50, Math.min(80, 45 + timeToImpactMs * 0.4)))
+			const dynamicStopMs = Math.round(Math.max(50, Math.min(75, 40 + timeToImpactMs * 0.35)))
 
 			this.targetBlockPos = hero.Position.Clone()
 			hero.OrderStop(false, false)
