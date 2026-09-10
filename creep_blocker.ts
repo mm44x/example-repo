@@ -38,29 +38,11 @@ new (class CreepLaneBlocker {
 
 	private readonly searchRadius = this.node.AddSlider(
 		"Search Radius",
-		800,
-		400,
-		1400,
+		900,
+		500,
+		1500,
 		50,
 		"Radius to search for allied lane creeps around your hero"
-	)
-
-	private readonly blockDistance = this.node.AddSlider(
-		"Block Distance",
-		45,
-		30,
-		75,
-		5,
-		"Target lead distance ahead of the front creep (Hero collision is ~24, creep is ~16)"
-	)
-
-	private readonly stopDuration = this.node.AddSlider(
-		"Micro-Stop Duration (ms)",
-		90,
-		50,
-		180,
-		10,
-		"Duration to hold position when creep makes physical contact before stepping forward again"
 	)
 
 	private readonly stopOnEnemy = this.node.AddToggle(
@@ -80,6 +62,7 @@ new (class CreepLaneBlocker {
 	private leadCreep: Creep | undefined = undefined
 	private targetBlockPos: Vector3 | undefined = undefined
 	private isCurrentlyBlocking = false
+	private lastOrderWasHold = false
 
 	constructor() {
 		EventsSDK.on("PostDataUpdate", this.PostDataUpdate.bind(this))
@@ -105,6 +88,7 @@ new (class CreepLaneBlocker {
 		}
 		this.leadCreep = undefined
 		this.targetBlockPos = undefined
+		this.lastOrderWasHold = false
 	}
 
 	private onPrepareUnitOrders(order: ExecuteOrder): false | void {
@@ -137,14 +121,14 @@ new (class CreepLaneBlocker {
 		if (this.leadCreep && this.leadCreep.IsValid && this.leadCreep.IsAlive) {
 			const creepScreen = RendererSDK.WorldToScreen(this.leadCreep.Position)
 			if (creepScreen) {
-				RendererSDK.OutlinedCircle(creepScreen, new Vector2(28, 28), Color.Green, 2)
+				RendererSDK.OutlinedCircle(creepScreen, new Vector2(30, 30), Color.Green, 2)
 			}
 		}
 
 		if (this.targetBlockPos) {
 			const blockScreen = RendererSDK.WorldToScreen(this.targetBlockPos)
 			if (blockScreen) {
-				RendererSDK.OutlinedCircle(blockScreen, new Vector2(16, 16), Color.Aqua, 2)
+				RendererSDK.OutlinedCircle(blockScreen, new Vector2(18, 18), Color.Aqua, 2)
 				if (this.leadCreep && this.leadCreep.IsValid) {
 					const creepScreen = RendererSDK.WorldToScreen(this.leadCreep.Position)
 					if (creepScreen) {
@@ -220,23 +204,25 @@ new (class CreepLaneBlocker {
 		// 3. Compute the marching direction of the creep wave
 		let sumX = 0
 		let sumY = 0
+		let validDirCount = 0
 		for (const c of allyCreeps) {
 			if (c.Forward.Length2D > 0.05) {
 				sumX += c.Forward.x
 				sumY += c.Forward.y
+				validDirCount++
 			}
 		}
 
-		let waveDir = new Vector3(sumX, sumY, 0)
-		if (waveDir.Length2D > 0.1) {
-			waveDir = waveDir.Normalize()
+		let waveDir: Vector3
+		if (validDirCount > 0) {
+			waveDir = new Vector3(sumX, sumY, 0).Normalize()
 		} else if (hero.Forward.Length2D > 0.1) {
 			waveDir = hero.Forward.Clone().SetZ(0).Normalize()
 		} else {
 			waveDir = new Vector3(1, 0, 0)
 		}
 
-		// 4. Identify the Lead Creep (the one furthest ahead along the wave's marching vector)
+		// 4. Identify the Lead Creep (furthest along waveDir)
 		let bestLeadCreep: Creep | undefined
 		let maxProgress = -Infinity
 
@@ -255,7 +241,7 @@ new (class CreepLaneBlocker {
 
 		this.leadCreep = bestLeadCreep
 
-		// 5. Geometry & Relative Decomposition
+		// 5. Creep orientation & vectors
 		let creepDir = bestLeadCreep.Forward.Clone()
 		creepDir.SetZ(0)
 		creepDir = creepDir.Length2D > 0.1 ? creepDir.Normalize() : waveDir
@@ -267,50 +253,99 @@ new (class CreepLaneBlocker {
 		const forwardDist = toHero.x * creepDir.x + toHero.y * creepDir.y
 		const lateralDist = toHero.x * perp.x + toHero.y * perp.y
 
-		const desiredDist = this.blockDistance.value
-		const idealBlockPos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(desiredDist))
-		this.targetBlockPos = idealBlockPos.Clone()
+		// 6. DYNAMIC & AUTOMATIC PHYSICAL CALCULATIONS
+		const heroHull = hero.HullRadius > 0 ? hero.HullRadius : 24
+		const creepHull = bestLeadCreep.HullRadius > 0 ? bestLeadCreep.HullRadius : 16
+		const contactThreshold = heroHull + creepHull // ~40 units
 
-		// 6. Action Execution
+		const heroSpeed = hero.MoveSpeed
+		const creepSpeed = Math.max(bestLeadCreep.MoveSpeed, 1)
+
+		// Dynamic Block Distance:
+		// If hero is slower than creep, hug as close as possible (contactThreshold + 3 = ~43)
+		// If hero is faster, allow a slightly larger buffer (up to 52) to absorb bumps smoothly
+		const speedDelta = heroSpeed - creepSpeed
+		const autoBlockDist = contactThreshold + Math.max(3, Math.min(12, 4 + speedDelta * 0.1))
+
+		// Dynamic Micro-Stop Duration (ms):
+		// Automatically scaled to bleed creep velocity without allowing creep pathfinder to recalculate around flanks
+		const timeToImpactMs = Math.max(0, ((forwardDist - contactThreshold) / creepSpeed) * 1000)
+		const dynamicStopMs = Math.round(Math.max(50, Math.min(105, 65 + timeToImpactMs * 0.5)))
+
 		claimOrder()
 		setCreepBlockingActive(true)
 		this.isCurrentlyBlocking = true
 
-		// STATE A: Hero is behind the lead creep or alongside its flank (forwardDist < 25)
-		// Sprint ahead to cut in front of the creep
-		if (forwardDist < 25) {
-			hero.MoveTo(idealBlockPos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 70)
+		// CASE 1: HERO IS BEHIND THE LEAD CREEP (Needs to overtake and get in front)
+		if (forwardDist < autoBlockDist - 5) {
+			this.lastOrderWasHold = false
+			const overtakeAhead = Math.max(autoBlockDist + 30, autoBlockDist + (autoBlockDist - forwardDist) * 0.8)
+
+			// If directly in line with creep's back, flank to the side to avoid bumping creep's rear hull
+			let targetPos: Vector3
+			if (forwardDist < 10) {
+				const flankSide = lateralDist >= 0 ? 1 : -1
+				const flankOffset = perp.MultiplyScalar(flankSide * Math.max(35, creepHull + heroHull + 5))
+				targetPos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(overtakeAhead)).Add(flankOffset)
+			} else {
+				targetPos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(overtakeAhead))
+			}
+
+			this.targetBlockPos = targetPos.Clone()
+			hero.MoveTo(targetPos, false, false)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
 			return
 		}
 
-		// STATE B: Hero is running too far ahead (forwardDist > desiredDist + 35)
-		// Hold position so the creep catches up and hits hero's back
-		if (forwardDist > desiredDist + 35) {
+		// CASE 2: HERO IS FAR AHEAD (Prepare position directly on the creep's line of march)
+		// Stand right on the centerline of the incoming creep so the creep cannot bypass!
+		if (forwardDist > autoBlockDist + 25) {
+			const interceptDist = Math.min(forwardDist, autoBlockDist + 35)
+			const centerlinePos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(interceptDist))
+			this.targetBlockPos = centerlinePos.Clone()
+
+			// If hero is off the centerline by > 12 units, step onto the centerline!
+			if (Math.abs(lateralDist) > 12) {
+				this.lastOrderWasHold = false
+				hero.MoveTo(centerlinePos, false, false)
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
+				return
+			}
+
+			// Already on the centerline, hold position waiting for the creep to arrive!
+			this.lastOrderWasHold = true
 			hero.HoldPosition(hero.Position, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + this.stopDuration.value)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + dynamicStopMs)
 			return
 		}
 
-		// STATE C: Hero is in the active collision zone (25 <= forwardDist <= desiredDist + 35)
-		// Check lateral alignment: If creep is veering/sliding off-center, steer immediately to block
-		if (Math.abs(lateralDist) > 16) {
+		// CASE 3: ACTIVE BODY BLOCK ZONE (Hero is right in front of the creep)
+		const idealBlockPos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(autoBlockDist))
+		this.targetBlockPos = idealBlockPos.Clone()
+
+		// If creep is veering or hero is slipping off the center line (> 14 units):
+		// Steer immediately to cut off the bypass!
+		if (Math.abs(lateralDist) > 14) {
+			this.lastOrderWasHold = false
 			hero.MoveTo(idealBlockPos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
 			return
 		}
 
-		// Creep is dead-center behind the hero!
-		// If creep is already in hull-to-hull contact (forwardDist <= 42):
+		// Creep is right behind hero!
+		// If creep is in physical hull contact (forwardDist <= contactThreshold + 3):
 		// Take a micro-step forward to maintain distance and prevent slipping
-		if (forwardDist <= 42) {
-			hero.MoveTo(idealBlockPos, false, false)
-			this.sleeper.Sleep(GameState.InputLag * 1000 + 60)
+		if (forwardDist <= contactThreshold + 3 || this.lastOrderWasHold) {
+			this.lastOrderWasHold = false
+			const microStepPos = bestLeadCreep.Position.Add(creepDir.MultiplyScalar(autoBlockDist + 12))
+			hero.MoveTo(microStepPos, false, false)
+			this.sleeper.Sleep(GameState.InputLag * 1000 + 50)
 			return
 		}
 
-		// Creep is close and about to hit hero hull: HOLD POSITION to form a solid brick wall!
+		// Creep is approaching and about to bump: HOLD POSITION to act as a solid brick wall!
+		this.lastOrderWasHold = true
 		hero.HoldPosition(hero.Position, false, false)
-		this.sleeper.Sleep(GameState.InputLag * 1000 + this.stopDuration.value)
+		this.sleeper.Sleep(GameState.InputLag * 1000 + dynamicStopMs)
 	}
 })()
