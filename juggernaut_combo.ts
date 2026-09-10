@@ -15,7 +15,8 @@ import {
 	RendererSDK,
 	TickSleeper,
 	Unit,
-	Vector2
+	Vector2,
+	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
 import { claimOrder } from "./coordination"
@@ -72,11 +73,11 @@ new (class JuggernautCombo {
 	)
 	private readonly bodyBlockLeadDist = this.bladeFuryNode.AddSlider(
 		"Body Block Lead Distance",
-		75,
-		40,
-		140,
+		55,
+		35,
+		100,
 		5,
-		"Distance ahead of target to move to block their path (Hull radius is 24)"
+		"Distance ahead of target center to stand when body blocking (Hero collision hull contact is ~48)"
 	)
 	private readonly autoPhaseInBladeFury = this.bladeFuryNode.AddToggle(
 		"Auto Phase Boots / Disperser",
@@ -87,6 +88,11 @@ new (class JuggernautCombo {
 		"Draw Blade Fury Radius",
 		true,
 		"Draw 260 radius ring around Juggernaut during Blade Fury"
+	)
+	private readonly drawBodyBlockPos = this.bladeFuryNode.AddToggle(
+		"Draw Body Block Marker",
+		true,
+		"Draw a visual marker at the predicted cutoff/body block location"
 	)
 
 	// Healing Ward Settings
@@ -149,6 +155,9 @@ new (class JuggernautCombo {
 	private readonly pSDK = new ParticlesSDK()
 
 	private lockedTarget: Hero | undefined = undefined
+	private lastBladeFuryMovePos: Vector3 | undefined = undefined
+	private lastBladeFuryMoveTime = 0
+	private currentBlockTargetPos: Vector3 | undefined = undefined
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
@@ -186,6 +195,9 @@ new (class JuggernautCombo {
 		this.sleeper.ResetTimer()
 		this.wardSleeper.ResetTimer()
 		this.lockedTarget = undefined
+		this.lastBladeFuryMovePos = undefined
+		this.lastBladeFuryMoveTime = 0
+		this.currentBlockTargetPos = undefined
 		this.pSDK.DestroyAll()
 	}
 
@@ -238,7 +250,13 @@ new (class JuggernautCombo {
 				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET ||
 				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_MOVE
 			) {
-				// Convert to move order to target position
+				// If combo key is held, completely block manual attack orders so they don't disrupt the body block path
+				// @ts-ignore
+				if (this.comboKey.isPressed) {
+					return false
+				}
+
+				// Convert to move order to target position outside combo key
 				if (order.Target && order.Target instanceof Unit && order.Target.IsValid) {
 					claimOrder()
 					ExecuteOrder.PrepareOrder({
@@ -292,6 +310,18 @@ new (class JuggernautCombo {
 			const heroScreenPos = RendererSDK.WorldToScreen(hero.Position)
 			if (heroScreenPos) {
 				RendererSDK.OutlinedCircle(heroScreenPos, new Vector2(260, 260), Color.Orange, 2)
+			}
+		}
+
+		// Draw Body Block target indicator
+		if (this.drawBodyBlockPos.value && this.isBladeFury(hero) && this.currentBlockTargetPos && this.lockedTarget) {
+			const blockScreenPos = RendererSDK.WorldToScreen(this.currentBlockTargetPos)
+			const targetScreenPos = RendererSDK.WorldToScreen(this.lockedTarget.Position)
+			if (blockScreenPos) {
+				RendererSDK.OutlinedCircle(blockScreenPos, new Vector2(28, 28), Color.Aqua, 2)
+				if (targetScreenPos) {
+					RendererSDK.Line(targetScreenPos, blockScreenPos, Color.Aqua.SetA(180), 2)
+				}
 			}
 		}
 	}
@@ -494,68 +524,235 @@ new (class JuggernautCombo {
 		}
 	}
 
-	/**
-	 * Special Blade Fury Chase:
-	 * Strictly NO attack orders.
-	 * Moves directly ahead of the target's movement path to body block them, keeping them trapped inside the 260 radius.
-	 */
+	// Special Blade Fury Chase & Body Block Controller:
+	// Strictly NO attack orders.
+	// 1. Overtake & Intercept: When behind the enemy, aims well ahead (200-360 units) along the escape route.
+	//    If not phased, adds a lateral offset (flanking) so Juggernaut slides past the enemy's shoulder.
+	// 2. Active Body Block: Once in front, positions directly in front of the enemy's nose (45-60 units).
+	// 3. Items: Slows with Diffusal/Disperser, activates Phase Boots when catching up, and Blinks ahead if needed.
 	private handleBladeFuryChase(hero: Hero, target: Hero): void {
-		// 1. Auto activate Phase Boots or Disperser for phased movement & bonus speed
-		if (this.autoPhaseInBladeFury.value) {
-			const phase = this.getItem(hero, "item_phase_boots")
-			if (phase && phase.Cooldown <= 0.1) {
-				claimOrder()
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
-					issuers: [hero],
-					ability: phase.Index,
-					queue: false,
-					showEffects: false,
-					isPlayerInput: false
-				})
-			}
-
-			const disperser = this.getItem(hero, "item_disperser")
-			if (disperser && disperser.Cooldown <= 0.1 && hero.Mana >= disperser.ManaCost) {
-				claimOrder()
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-					issuers: [hero],
-					target: hero.Index,
-					ability: disperser.Index,
-					queue: false,
-					showEffects: false,
-					isPlayerInput: false
-				})
-			}
-		}
+		// 1. Offensive & Mobility Items during Blade Fury
+		this.executeBladeFuryItems(hero, target)
 
 		if (this.sleeper.Sleeping) {
 			return
 		}
 
-		// 2. Body Block Position Calculation
-		let targetMovePos = target.Position.Clone()
+		const targetIsMoving = target.IsMoving && target.MoveSpeed > 50 && !target.IsStunned && !target.IsRooted
 
-		if (this.bodyBlockEnabled.value && target.IsMoving && !target.IsStunned && !target.IsRooted) {
-			const leadDist = this.bodyBlockLeadDist.value
-			const forward = target.Forward
-			// Move slightly in front of the enemy so their hull collides with Juggernaut
-			targetMovePos = target.Position.Add(forward.MultiplyScalar(leadDist))
+		// If target is stopped/stunned or body blocking disabled, move straight to target
+		if (!targetIsMoving || !this.bodyBlockEnabled.value) {
+			this.currentBlockTargetPos = target.Position.Clone()
+			this.issueBladeFuryMove(hero, this.currentBlockTargetPos, 100)
+			return
 		}
 
-		// Issue strict move order
+		// 2. Relative Geometry & Coordinate Decomposition
+		const targetDir = target.Forward
+		const toJugg = hero.Position.Subtract(target.Position)
+		const forwardDist = toJugg.x * targetDir.x + toJugg.y * targetDir.y // >0 ahead, <0 behind
+		const perp = new Vector3(-targetDir.y, targetDir.x, 0)
+		const lateralDist = toJugg.x * perp.x + toJugg.y * perp.y // offset to side
+
+		const isPhased =
+			hero.HasBuffByName("modifier_item_phase_boots_active") ||
+			hero.HasBuffByName("modifier_item_disperser_active")
+
+		let moveDest: Vector3
+
+		// STATE A: Juggernaut is BEHIND the target (Overtake & Intercept)
+		if (forwardDist < 35) {
+			// Look far ahead on target's path (where enemy will be in ~0.65s)
+			const overtakeDist = Math.max(220, Math.min(360, target.MoveSpeed * 0.75))
+			const aheadPoint = target.Position.Add(targetDir.MultiplyScalar(overtakeDist))
+
+			if (isPhased) {
+				// Phased: can slip straight through enemy
+				moveDest = aheadPoint
+			} else {
+				// Not phased: if directly behind, steer slightly to side
+				// to pass around enemy's shoulder instead of hitting back hull
+				const side = lateralDist >= 0 ? 1 : -1
+				moveDest = aheadPoint.Add(perp.MultiplyScalar(side * 50))
+			}
+		}
+		// STATE B: Juggernaut is IN FRONT of the target (Active Body Block)
+		else {
+			const desiredBlockDist = this.bodyBlockLeadDist.value // default 55 units in front of center
+			// In the sweet block zone! Stand dead-center in front of enemy's path
+			moveDest = target.Position.Add(targetDir.MultiplyScalar(desiredBlockDist))
+		}
+
+		this.currentBlockTargetPos = moveDest
+		this.issueBladeFuryMove(hero, moveDest, 90)
+	}
+
+	private issueBladeFuryMove(hero: Hero, position: Vector3, minSleepMs = 90): void {
+		const now = GameState.RawGameTime
+		// Anti-stutter: only send new order if position changed by > 20 units or > 140ms elapsed
+		if (
+			this.lastBladeFuryMovePos &&
+			this.lastBladeFuryMovePos.Distance2D(position) < 20 &&
+			now - this.lastBladeFuryMoveTime < 0.14
+		) {
+			return
+		}
+
+		this.lastBladeFuryMovePos = position.Clone()
+		this.lastBladeFuryMoveTime = now
+
 		claimOrder()
 		ExecuteOrder.PrepareOrder({
 			orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
 			issuers: [hero],
-			position: targetMovePos,
+			position,
 			queue: false,
 			showEffects: false,
 			isPlayerInput: false
 		})
 
-		this.sleeper.Sleep(GameState.InputLag * 1000 + 75)
+		this.sleeper.Sleep(GameState.InputLag * 1000 + minSleepMs)
+	}
+
+	private executeBladeFuryItems(hero: Hero, target: Hero): void {
+		const dist = hero.Distance2D(target)
+		const isTargetImmune = target.IsMagicImmune || target.IsDebuffImmune
+
+		// 1. BLINK DAGGER (During Blade Fury if target is getting away)
+		if (this.itemsSelector.IsEnabled("item_blink") && this.blinkMode.SelectedID !== 2 && dist > 350) {
+			const blink =
+				this.getItem(hero, "item_blink") ||
+				this.getItem(hero, "item_swift_blink") ||
+				this.getItem(hero, "item_arcane_blink") ||
+				this.getItem(hero, "item_overwhelming_blink")
+
+			if (blink && blink.Cooldown <= 0.1) {
+				const blinkRange = blink.CastRange > 0 ? blink.CastRange : 1200
+				let blinkPos = target.Position.Clone()
+				if (target.IsMoving) {
+					blinkPos = target.InFront(100)
+				}
+				if (hero.Distance2D(blinkPos) <= blinkRange) {
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: blinkPos,
+						ability: blink.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+					return
+				}
+			}
+		}
+
+		// 2. PHASE BOOTS & DISPERSER (Speed & Phase)
+		if (this.autoPhaseInBladeFury.value) {
+			const toJugg = hero.Position.Subtract(target.Position)
+			const forwardDist = toJugg.x * target.Forward.x + toJugg.y * target.Forward.y
+
+			// Activate Phase Boots when catching up (behind or > 140 distance)
+			// When already blocking in front, keep solid collision
+			if (forwardDist < 40 || dist > 140) {
+				const phase = this.getItem(hero, "item_phase_boots")
+				if (phase && phase.Cooldown <= 0.1) {
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+						issuers: [hero],
+						ability: phase.Index,
+						queue: false,
+						showEffects: false,
+						isPlayerInput: false
+					})
+				}
+
+				const disperser = this.getItem(hero, "item_disperser")
+				if (disperser && disperser.Cooldown <= 0.1 && hero.Mana >= disperser.ManaCost) {
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: hero.Index,
+						ability: disperser.Index,
+						queue: false,
+						showEffects: false,
+						isPlayerInput: false
+					})
+				}
+			}
+		}
+
+		// 3. DIFFUSAL BLADE / DISPERSER TARGET SLOW
+		if (
+			(this.itemsSelector.IsEnabled("item_diffusal_blade") || this.itemsSelector.IsEnabled("item_disperser")) &&
+			!isTargetImmune &&
+			dist <= 600
+		) {
+			const diffusal = this.getItem(hero, "item_disperser") || this.getItem(hero, "item_diffusal_blade")
+			if (diffusal && diffusal.Cooldown <= 0.1 && hero.Mana >= diffusal.ManaCost) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: target.Index,
+					ability: diffusal.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return
+			}
+		}
+
+		// 4. ABYSSAL BLADE
+		if (this.itemsSelector.IsEnabled("item_abyssal_blade") && !isTargetImmune && dist <= 600) {
+			const abyssal = this.getItem(hero, "item_abyssal_blade")
+			if (abyssal && abyssal.Cooldown <= 0.1 && hero.Mana >= abyssal.ManaCost) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: target.Index,
+					ability: abyssal.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return
+			}
+		}
+
+		// 5. NULLIFIER
+		if (this.itemsSelector.IsEnabled("item_nullifier") && !isTargetImmune && dist <= 800) {
+			const nullifier = this.getItem(hero, "item_nullifier")
+			if (nullifier && nullifier.Cooldown <= 0.1 && hero.Mana >= nullifier.ManaCost) {
+				const hasGhostBuff =
+					target.HasBuffByName("modifier_item_ghost_scepter") ||
+					target.HasBuffByName("modifier_item_ethereal_blade") ||
+					target.HasBuffByName("modifier_eul_cyclone") ||
+					target.HasBuffByName("modifier_wind_waker")
+
+				if (hasGhostBuff) {
+					claimOrder()
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: target.Index,
+						ability: nullifier.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+					this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				}
+			}
+		}
 	}
 
 	/**
