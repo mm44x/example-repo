@@ -158,6 +158,10 @@ new (class JuggernautCombo {
 	private currentBlockTargetPos: Vector3 | undefined = undefined
 	private bladeFuryZigzagSide = 1
 	private lastBladeFuryTargetDir: Vector3 | undefined = undefined
+	private lastSeenTargetPos: Vector3 | undefined = undefined
+	private lastSeenTargetDir: Vector3 | undefined = undefined
+	private lastSeenTargetSpeed = 300
+	private lastSeenTargetTime = 0
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
@@ -198,6 +202,10 @@ new (class JuggernautCombo {
 		this.currentBlockTargetPos = undefined
 		this.bladeFuryZigzagSide = 1
 		this.lastBladeFuryTargetDir = undefined
+		this.lastSeenTargetPos = undefined
+		this.lastSeenTargetDir = undefined
+		this.lastSeenTargetSpeed = 300
+		this.lastSeenTargetTime = 0
 		this.pSDK.DestroyAll()
 	}
 
@@ -361,33 +369,65 @@ new (class JuggernautCombo {
 
 		// 3. Target Selection & Locking
 		let bestTarget: Hero | undefined = this.lockedTarget
-		if (!bestTarget || !bestTarget.IsValid || !bestTarget.IsAlive || !bestTarget.IsVisible) {
+
+		// If locked target is dead or invalid, clear immediately
+		if (bestTarget && (!bestTarget.IsValid || !bestTarget.IsAlive)) {
+			this.lockedTarget = undefined
+			bestTarget = undefined
+		}
+
+		// If locked target has been in fog for > 1.5 seconds, release lock
+		if (bestTarget && !bestTarget.IsVisible && GameState.RawGameTime - this.lastSeenTargetTime > 1.5) {
+			this.lockedTarget = undefined
+			bestTarget = undefined
+		}
+
+		// Try to find a visible enemy near mouse cursor
+		if (!bestTarget || !bestTarget.IsVisible) {
 			const mousePos = InputManager.CursorOnWorld
 			let minDist = Infinity
+			let nearbyVisibleEnemy: Hero | undefined
 			for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
 				if (enemy.IsValid && enemy.IsAlive && enemy.IsVisible && enemy.IsEnemy(hero) && !enemy.IsIllusion) {
 					const dist = enemy.Position.Distance2D(mousePos)
 					if (dist < this.comboRadius.value && dist < minDist) {
 						minDist = dist
-						bestTarget = enemy
+						nearbyVisibleEnemy = enemy
 					}
 				}
 			}
 
-			if (this.lockTargetEnabled.value && bestTarget) {
-				this.lockedTarget = bestTarget
+			// Prioritize visible enemy over an invisible/fog target
+			if (nearbyVisibleEnemy) {
+				bestTarget = nearbyVisibleEnemy
+				if (this.lockTargetEnabled.value) {
+					this.lockedTarget = bestTarget
+				}
 			}
 		}
 
+		// If no target is available (none visible and none in fog):
 		if (!bestTarget) {
 			this.pSDK.DestroyByKey("jugg_target_ring")
+			// If Blade Fury is spinning, smoothly follow mouse cursor! Don't freeze!
+			if (this.isBladeFury(hero)) {
+				const cursorWorld = InputManager.CursorOnWorld
+				if (cursorWorld) {
+					this.currentBlockTargetPos = cursorWorld.Clone()
+					this.issueBladeFuryMove(hero, cursorWorld, 60)
+				}
+			}
 			return
 		}
 
-		this.pSDK.DrawCircle("jugg_target_ring", bestTarget, 140, {
-			Color: new Color(255, 120, 0, 220),
-			Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
-		})
+		if (bestTarget.IsVisible) {
+			this.pSDK.DrawCircle("jugg_target_ring", bestTarget, 140, {
+				Color: new Color(255, 120, 0, 220),
+				Attachment: ParticleAttachment.PATTACH_ABSORIGIN_FOLLOW
+			})
+		} else {
+			this.pSDK.DestroyByKey("jugg_target_ring")
+		}
 
 		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
@@ -569,6 +609,38 @@ new (class JuggernautCombo {
 	private handleBladeFuryChase(hero: Hero, target: Hero): void {
 		// 1. Offensive & Mobility Items during Blade Fury
 		this.executeBladeFuryItems(hero, target)
+
+		const now = GameState.RawGameTime
+
+		// FOG OF WAR PREDICTION & CHASE:
+		// If target entered fog (not visible), extrapolate escape trajectory into the fog!
+		if (!target.IsVisible) {
+			const fogDuration = now - this.lastSeenTargetTime
+			// Chase into fog along predicted trajectory for up to 1.5 seconds
+			if (fogDuration <= 1.5 && this.lastSeenTargetPos && this.lastSeenTargetDir) {
+				const travelDist = Math.min(360, this.lastSeenTargetSpeed * fogDuration + 60)
+				const predictedFogPos = this.lastSeenTargetPos.Add(this.lastSeenTargetDir.MultiplyScalar(travelDist))
+
+				this.currentBlockTargetPos = predictedFogPos.Clone()
+				this.issueBladeFuryMove(hero, predictedFogPos, 55)
+				return
+			}
+
+			// Lost in fog for > 1.5s: release lock and steer with mouse cursor
+			this.lockedTarget = undefined
+			const cursorWorld = InputManager.CursorOnWorld
+			if (cursorWorld) {
+				this.currentBlockTargetPos = cursorWorld.Clone()
+				this.issueBladeFuryMove(hero, cursorWorld, 60)
+			}
+			return
+		}
+
+		// Target IS visible: update snapshot for future fog extrapolation
+		this.lastSeenTargetPos = target.Position.Clone()
+		this.lastSeenTargetDir = target.Forward.Clone().SetZ(0).Normalize()
+		this.lastSeenTargetSpeed = target.MoveSpeed > 50 ? target.MoveSpeed : 300
+		this.lastSeenTargetTime = now
 
 		const targetIsMoving = target.IsMoving && target.MoveSpeed > 50 && !target.IsStunned && !target.IsRooted
 
