@@ -105,6 +105,19 @@ new (class PudgeCombo {
 		true,
 		"Draw predicted position circle and trajectory line when targeting"
 	)
+	private readonly maxComboHookDistance = this.enemyHookNode.AddSlider(
+		"Max Combo Hook Distance",
+		950,
+		500,
+		1300,
+		25,
+		"Maximum distance to cast Hook on moving targets in Combo. If disabled (Stunned/Rooted), full range is allowed."
+	)
+	private readonly jukeCorrection = this.enemyHookNode.AddToggle(
+		"Juke / Zig-Zag Detection",
+		true,
+		"Detect erratic direction shifts and dynamically correct lead distance against juking enemies"
+	)
 
 	// Auto Hook Ally (Save) Settings
 	private readonly allyHookNode = this.entry.AddNode("Auto Hook Ally (Save)")
@@ -213,6 +226,16 @@ new (class PudgeCombo {
 	private pendingAtosTarget: Hero | undefined = undefined
 	private pendingAtosTime = 0
 	private hookInFlightUntil = 0
+	private readonly targetMotionMap = new Map<
+		number,
+		{
+			lastPos: Vector3
+			lastTime: number
+			velocity: Vector3
+			directionHistory: Vector3[]
+			isJuking: boolean
+		}
+	>()
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
@@ -261,6 +284,7 @@ new (class PudgeCombo {
 		this.castingHookTarget = undefined
 		this.castingHookPos = undefined
 		this.castingHookStartTime = 0
+		this.targetMotionMap.clear()
 		this.pSDK.DestroyAll()
 	}
 
@@ -334,48 +358,151 @@ new (class PudgeCombo {
 	 * - Pudge turn time towards predicted target
 	 * - Cast point (0.3s) & network ping / tick latency
 	 * - Projectile flight time (1600 speed)
-	 * - True linear velocity vector (target.Forward * target.MoveSpeed)
-	 * - Disables, Channeling, and Rod of Atos impact sync
+	 * - True delta velocity tracking & direction history (replaces naive model forward)
+	 * - Juke / zig-zag erratic movement correction
+	 * - Remaining disable time (stun, root, hex, sleep) vs arrival delay
+	 * - Rod of Atos impact sync
 	 */
 	private calculateHookLead(hero: Hero, target: Hero, hookAbil: Ability): Vector3 {
 		const hookSpeed = 1600
 		const castPoint = hookAbil.CastPoint > 0 ? hookAbil.CastPoint : 0.3
 		const latency = (GameState.InputLag || 0.03) + 0.033
 
-		// 1. If target is stationary (stunned, rooted, hexed, sleep, channeling, or not moving), hook directly at position
-		if (
+		// 1. Check current disable status and remaining disable duration
+		const remainingDisable = this.getStunOrRootRemaining(target)
+		const isFullyDisabled =
 			target.IsStunned ||
 			target.IsRooted ||
 			target.IsHexed ||
 			target.IsChanneling ||
 			!this.hookPredictMovement.value ||
 			!target.IsMoving
-		) {
-			return target.Position.Clone()
-		}
 
-		const targetSpeed = target.MoveSpeed > 0 ? target.MoveSpeed : 300
-		const forward = target.Forward
+		if (isFullyDisabled) {
+			const turnTime = hero.GetTurnTime(target.Position)
+			const dist = hero.Distance2D(target.Position)
+			const totalDelay = turnTime + castPoint + dist / hookSpeed + latency
+
+			if (remainingDisable >= totalDelay || !target.IsMoving) {
+				return target.Position.Clone()
+			}
+		}
 
 		// 2. If Rod of Atos was fired at this target, predict where Atos will hit and root them
 		if (this.pendingAtosTarget === target && GameState.RawGameTime <= this.pendingAtosTime) {
 			const remainingAtosFlight = Math.max(0, this.pendingAtosTime - GameState.RawGameTime)
-			return target.Position.Add(forward.MultiplyScalar(targetSpeed * remainingAtosFlight))
+			const speed = target.MoveSpeed > 0 ? target.MoveSpeed : 300
+			const forward = target.Forward
+			return target.Position.Add(forward.MultiplyScalar(speed * remainingAtosFlight))
 		}
 
-		// 3. Iterative solver: calculate turn time + cast point + flight time + latency using true target velocity
+		// 3. Resolve real motion vector using delta tracking (direction & speed)
+		const motion = this.targetMotionMap.get(target.Index)
+		let moveVector = target.Forward.MultiplyScalar(target.MoveSpeed > 0 ? target.MoveSpeed : 300)
+		let isJuking = false
+
+		if (motion && motion.velocity.Length > 40) {
+			moveVector = motion.velocity.Clone()
+			isJuking = motion.isJuking && this.jukeCorrection.value
+		}
+
+		// 4. Iterative solver: calculate turn time + cast point + flight time + latency
 		let predPos = target.Position.Clone()
 
 		for (let iter = 0; iter < 5; iter++) {
 			const turnTime = hero.GetTurnTime(predPos)
 			const dist = hero.Distance2D(predPos)
 			const flightTime = dist / hookSpeed
-			const totalDelay = turnTime + castPoint + flightTime + latency
+			let totalDelay = turnTime + castPoint + flightTime + latency
 
-			predPos = target.Position.Add(forward.MultiplyScalar(targetSpeed * totalDelay))
+			if (remainingDisable > 0) {
+				totalDelay = Math.max(0, totalDelay - remainingDisable)
+			}
+
+			// Juke correction: against erratic zig-zag movement, blend lead by 55%
+			// This targets the center of their movement corridor instead of over-shooting
+			const leadScalar = isJuking ? 0.55 : 1.0
+			const displacement = moveVector.MultiplyScalar(totalDelay * leadScalar)
+
+			// Clamp displacement so target cannot travel faster than their max speed
+			const maxMoveDist = (target.MoveSpeed > 0 ? target.MoveSpeed : 350) * totalDelay
+			if (displacement.Length > maxMoveDist) {
+				displacement.Normalize().MultiplyScalar(maxMoveDist)
+			}
+
+			predPos = target.Position.Add(displacement)
 		}
 
 		return predPos
+	}
+
+	private updateHeroMotionTracking(): void {
+		const now = GameState.RawGameTime
+		for (const target of EntityManager.GetEntitiesByClass(Hero)) {
+			if (!target.IsValid || !target.IsAlive || !target.IsVisible || target.IsIllusion) {
+				continue
+			}
+
+			const currentPos = target.Position
+			const existing = this.targetMotionMap.get(target.Index)
+
+			if (!existing) {
+				this.targetMotionMap.set(target.Index, {
+					lastPos: currentPos.Clone(),
+					lastTime: now,
+					velocity: new Vector3(0, 0, 0),
+					directionHistory: [],
+					isJuking: false
+				})
+				continue
+			}
+
+			const dt = now - existing.lastTime
+			if (dt >= 0.03 && dt <= 0.25) {
+				const delta = currentPos.Subtract(existing.lastPos)
+				delta.z = 0
+				const distMoved = delta.Length
+				const observedSpeed = distMoved / dt
+
+				if (distMoved > 2.0 && observedSpeed > 40) {
+					const moveDir = delta.Clone().Normalize()
+					const effectiveSpeed = Math.min(target.MoveSpeed * 1.25, observedSpeed)
+					existing.velocity = moveDir.MultiplyScalar(effectiveSpeed)
+
+					existing.directionHistory.push(moveDir)
+					if (existing.directionHistory.length > 5) {
+						existing.directionHistory.shift()
+					}
+
+					if (existing.directionHistory.length >= 3) {
+						let sharpTurns = 0
+						for (let i = 1; i < existing.directionHistory.length; i++) {
+							const prev = existing.directionHistory[i - 1]
+							const curr = existing.directionHistory[i]
+							const dot = prev.x * curr.x + prev.y * curr.y
+							if (dot < 0.5) {
+								sharpTurns++
+							}
+						}
+						existing.isJuking = sharpTurns >= 2
+					}
+				} else {
+					existing.velocity = new Vector3(0, 0, 0)
+					existing.directionHistory.length = 0
+					existing.isJuking = false
+				}
+
+				existing.lastPos = currentPos.Clone()
+				existing.lastTime = now
+			} else if (dt > 0.25) {
+				// Reset tracking after a gap (e.g. came out of fog)
+				existing.lastPos = currentPos.Clone()
+				existing.lastTime = now
+				existing.velocity = new Vector3(0, 0, 0)
+				existing.directionHistory.length = 0
+				existing.isJuking = false
+			}
+		}
 	}
 
 	/**
@@ -1221,6 +1348,9 @@ new (class PudgeCombo {
 			}
 		}
 
+		// Synchronize motion data (velocity & juke tracking)
+		this.updateHeroMotionTracking()
+
 		// 0. Auto Cancel Hook (S-Stop) during 0.3s Cast Windup if target turns, stops, or an obstacle intervenes
 		const hookAbil = hero.GetAbilityByName("pudge_meat_hook")
 		if (hookAbil && hookAbil.IsValid && hookAbil.Level > 0) {
@@ -1429,7 +1559,13 @@ new (class PudgeCombo {
 						const dist = hero.Distance2D(bestTarget)
 
 						// Cast hook if outside melee range (> 250) or if target is rooted/stunned
-						if (dist <= castRange && (dist > 250 || bestTarget.IsRooted || bestTarget.IsStunned)) {
+						const isTargetDisabled =
+							bestTarget.IsRooted || bestTarget.IsStunned || bestTarget.IsHexed || bestTarget.IsChanneling
+						const effectiveMaxRange = isTargetDisabled
+							? castRange
+							: Math.min(castRange, this.maxComboHookDistance.value)
+
+						if (dist <= effectiveMaxRange && (dist > 250 || isTargetDisabled)) {
 							const predictedPos = this.calculateHookLead(hero, bestTarget, hook)
 							this.lastPredictedHookPos = predictedPos
 
