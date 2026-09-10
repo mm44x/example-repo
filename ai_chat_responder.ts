@@ -968,7 +968,7 @@ class AIChatResponder {
 
 		let isTeamOnly = false
 		let remaining = line
-		const chanMatch = line.match(/^\[(Allies|Team|All|Whisper|Party)\]\s*(.*)$/i)
+		const chanMatch = line.match(/^[\[\(](Allies|Team|All|Whisper|Party|Coaching)[\]\)]\s*:?\s*(.*)$/i)
 		if (chanMatch) {
 			const tag = chanMatch[1].toLowerCase()
 			isTeamOnly = tag === "allies" || tag === "team"
@@ -998,7 +998,10 @@ class AIChatResponder {
 			return
 		}
 
-		if (senderName && /^(?:Game|Console|System|Server)$/i.test(senderName.trim())) {
+		if (
+			senderName &&
+			/^(?:Game|Console|System|Server|\(Allies\)|\(Team\)|\(All\)|\(Coaching\))$/i.test(senderName.trim())
+		) {
 			if (!this.replyPings.value) {
 				return
 			}
@@ -1303,6 +1306,26 @@ class AIChatResponder {
 			/\b(?:paused|unpaused) the game\b/i.test(clean) ||
 			/\bgame is safe to leave\b/i.test(clean) ||
 			/\bCurrent Game Time:\b/i.test(clean)
+		) {
+			return true
+		}
+
+		// 14. High Fives & Tips
+		if (
+			/\bHigh\s*Five\b/i.test(clean) ||
+			/\bleft\s+hanging\b/i.test(clean) ||
+			/\btip(?:ped)?\b/i.test(clean) ||
+			/\bTip from\b/i.test(clean)
+		) {
+			return true
+		}
+
+		// 15. Game Coaching & System suggestions
+		if (
+			/\bRemember to purchase items\b/i.test(clean) ||
+			/\bYour team has no\b/i.test(clean) ||
+			/\bSuggestion:\b/i.test(clean) ||
+			/\bConsider buying\b/i.test(clean)
 		) {
 			return true
 		}
