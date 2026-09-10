@@ -23,7 +23,7 @@ import { claimOrder, isRealHero } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
 
 const COMBO_SPELLS = [
-	"grimstroke_soulbind",
+	"grimstroke_soul_chain",
 	"grimstroke_dark_portrait",
 	"grimstroke_spirit_walk",
 	"grimstroke_ink_creature",
@@ -220,13 +220,22 @@ new (class GrimstrokeCombo {
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
-		defaultCombo.set("grimstroke_soulbind", [true, true, true, 0])
+		defaultCombo.set("grimstroke_soul_chain", [true, true, true, 0])
 		defaultCombo.set("grimstroke_dark_portrait", [true, true, true, 1])
 		defaultCombo.set("grimstroke_spirit_walk", [true, true, true, 2])
 		defaultCombo.set("grimstroke_ink_creature", [true, true, true, 3])
 		defaultCombo.set("grimstroke_dark_artistry", [true, true, true, 4])
 
 		this.comboSequenceGrid = this.entry.AddDynamicImageSelector("Combo Order", COMBO_SPELLS, defaultCombo)
+
+		// Purge legacy "grimstroke_soulbind" if cached in configuration
+		if (this.comboSequenceGrid.enabledValues.has("grimstroke_soulbind")) {
+			this.comboSequenceGrid.enabledValues.delete("grimstroke_soulbind")
+		}
+		const oldIdx = this.comboSequenceGrid.values.indexOf("grimstroke_soulbind")
+		if (oldIdx !== -1) {
+			this.comboSequenceGrid.values.splice(oldIdx, 1)
+		}
 
 		for (const spell of COMBO_SPELLS) {
 			if (!this.comboSequenceGrid.enabledValues.has(spell)) {
@@ -289,14 +298,25 @@ new (class GrimstrokeCombo {
 
 	private isSoulbound(hero: Hero): boolean {
 		return (
-			hero.HasBuffByName("modifier_grimstroke_soulbind") ||
-			hero.Buffs.some(b => b && b.IsValid && b.Name.includes("soulbind"))
+			hero.HasBuffByName("modifier_grimstroke_soul_chain") ||
+			hero.Buffs.some(b => b && b.IsValid && (b.Name.includes("soul_chain") || b.Name.includes("soulbind")))
 		)
 	}
 
 	private OnDraw(): void {
 		if (this.comboSequenceGrid) {
 			let dirty = false
+			// Purge legacy cached entry if present in configuration
+			if (this.comboSequenceGrid.enabledValues.has("grimstroke_soulbind")) {
+				this.comboSequenceGrid.enabledValues.delete("grimstroke_soulbind")
+				dirty = true
+			}
+			const oldIdx = this.comboSequenceGrid.values.indexOf("grimstroke_soulbind")
+			if (oldIdx !== -1) {
+				this.comboSequenceGrid.values.splice(oldIdx, 1)
+				dirty = true
+			}
+
 			for (const spell of COMBO_SPELLS) {
 				if (!this.comboSequenceGrid.enabledValues.has(spell)) {
 					this.comboSequenceGrid.enabledValues.set(spell, [
@@ -1017,12 +1037,12 @@ new (class GrimstrokeCombo {
 				continue
 			}
 
-			// 1. SOULBIND (R)
-			if (actionName === "grimstroke_soulbind") {
+			// 1. SOULBIND (R: grimstroke_soul_chain)
+			if (actionName === "grimstroke_soul_chain" || actionName === "grimstroke_soulbind") {
 				if (isTargetImmune) {
 					continue
 				}
-				const soulbind = hero.GetAbilityByName("grimstroke_soulbind")
+				const soulbind = hero.GetAbilityByName("grimstroke_soul_chain")
 				if (
 					soulbind &&
 					soulbind.IsValid &&
