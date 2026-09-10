@@ -156,7 +156,6 @@ new (class JuggernautCombo {
 
 	private lockedTarget: Hero | undefined = undefined
 	private currentBlockTargetPos: Vector3 | undefined = undefined
-	private isBladeFuryStopped = false
 	private bladeFuryZigzagSide = 1
 	private lastBladeFuryTargetDir: Vector3 | undefined = undefined
 
@@ -197,7 +196,6 @@ new (class JuggernautCombo {
 		this.wardSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.currentBlockTargetPos = undefined
-		this.isBladeFuryStopped = false
 		this.bladeFuryZigzagSide = 1
 		this.lastBladeFuryTargetDir = undefined
 		this.pSDK.DestroyAll()
@@ -252,24 +250,25 @@ new (class JuggernautCombo {
 				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_TARGET ||
 				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_ATTACK_MOVE
 			) {
-				// If combo key is held, completely block manual attack orders so they don't disrupt the body block path
-				// @ts-ignore
-				if (this.comboKey.isPressed) {
-					return false
-				}
+				// Strictly convert ANY attack order during Blade Fury into a pure MOVE order!
+				// When combo key is held, move to the body block target position.
+				// Outside combo key, move to target unit's position.
+				// This guarantees the hero NEVER attempts an attack animation during Blade Fury!
+				claimOrder()
+				const movePos =
+					(this.currentBlockTargetPos && this.currentBlockTargetPos.Clone()) ||
+					(order.Target && order.Target instanceof Unit && order.Target.IsValid
+						? order.Target.Position.Clone()
+						: hero.Position.Add(hero.Forward.MultiplyScalar(50)))
 
-				// Convert to move order to target position outside combo key
-				if (order.Target && order.Target instanceof Unit && order.Target.IsValid) {
-					claimOrder()
-					ExecuteOrder.PrepareOrder({
-						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
-						issuers: [hero],
-						position: order.Target.Position,
-						queue: false,
-						showEffects: false,
-						isPlayerInput: false
-					})
-				}
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_POSITION,
+					issuers: [hero],
+					position: movePos,
+					queue: false,
+					showEffects: false,
+					isPlayerInput: false
+				})
 				return false
 			}
 		}
@@ -403,7 +402,6 @@ new (class JuggernautCombo {
 			this.handleBladeFuryChase(hero, bestTarget)
 			return
 		}
-		this.isBladeFuryStopped = false
 		this.lastBladeFuryTargetDir = undefined
 
 		if (this.sleeper.Sleeping) {
@@ -548,12 +546,6 @@ new (class JuggernautCombo {
 		return heroPos.Add(targetDir.MultiplyScalar(fwd)).Add(targetPerp.MultiplyScalar(lat))
 	}
 
-	private issueBladeFuryStop(hero: Hero, minSleepMs = 65): void {
-		claimOrder()
-		hero.OrderStop(false, false)
-		this.sleeper.Sleep(GameState.InputLag * 1000 + minSleepMs)
-	}
-
 	private issueBladeFuryMove(hero: Hero, position: Vector3, minSleepMs = 60): void {
 		claimOrder()
 		ExecuteOrder.PrepareOrder({
@@ -569,22 +561,19 @@ new (class JuggernautCombo {
 	}
 
 	// Special Blade Fury Chase & Body Block Controller:
-	// Strictly NO attack orders.
-	// Replicates the proven, high-precision creep blocker architecture (100% automated, no manual slider):
-	// 1. Overtake: When behind (leadDelta < 32) or when enemy turns/goceks, Juggernaut CANNOT stop!
-	//    100% full sprint to catch up (phased or 42 lateral clearance).
-	// 2. Cutting In: When ahead (leadDelta >= 32) but off to side (|latDiff| > 18), steps forward-inward to shut the door.
-	// 3. Stand Still / Wait: When too far ahead (leadDelta > 48), stands still (OrderStop) so enemy runs into back.
-	// 4. Active Body Block (32 <= leadDelta <= 48): Authentic rapid Stop-and-Go rhythm pinning enemy in Blade Fury.
+	// STRICTLY ZERO ATTACK ORDERS, ZERO ORDER_STOP!
+	// In Dota 2, calling OrderStop or attacking during Blade Fury triggers auto-attack animations
+	// and deals 0 physical damage while locking the hero in attack-cancel stutter.
+	// We use 100% pure MOVE_TO_POSITION commands with rapid micro-weaving to maintain
+	// unbreakable collision hull obstruction directly on the enemy's nose.
 	private handleBladeFuryChase(hero: Hero, target: Hero): void {
 		// 1. Offensive & Mobility Items during Blade Fury
 		this.executeBladeFuryItems(hero, target)
 
 		const targetIsMoving = target.IsMoving && target.MoveSpeed > 50 && !target.IsStunned && !target.IsRooted
 
-		// If target is stopped/stunned/rooted or body blocking disabled, move straight to target
+		// If target is stopped/stunned/rooted or body blocking disabled, move straight to target position
 		if (!targetIsMoving || !this.bodyBlockEnabled.value) {
-			this.isBladeFuryStopped = false
 			this.lastBladeFuryTargetDir = undefined
 			if (this.sleeper.Sleeping) {
 				return
@@ -605,8 +594,7 @@ new (class JuggernautCombo {
 			const turnDot = rawTargetDir.Dot(this.lastBladeFuryTargetDir)
 			if (turnDot < 0.5) {
 				// Enemy just juked / reversed direction!
-				// Immediately cancel any stopped state and reset sleeper so Juggernaut reacts instantly
-				this.isBladeFuryStopped = false
+				// Reset sleeper immediately so Juggernaut reacts on this exact frame!
 				this.sleeper.ResetTimer()
 			}
 		}
@@ -636,10 +624,8 @@ new (class JuggernautCombo {
 		// =========================================================================
 		// SCENARIO 1: OVERTAKE (Hero is behind or enemy just reversed/goceked! leadDelta < 32)
 		// Hero CANNOT stop! Hero MUST sprint at full movespeed with boots!
-		// OrderStop is 100% FORBIDDEN here!
 		// =========================================================================
 		if (leadDelta < 32) {
-			this.isBladeFuryStopped = false
 			let overtakePos: Vector3
 
 			if (isPhased) {
@@ -663,7 +649,6 @@ new (class JuggernautCombo {
 		// Step forward and inward into the enemy's escape path! NEVER step backwards!
 		// =========================================================================
 		if (Math.abs(latDiff) > 18) {
-			this.isBladeFuryStopped = false
 			const inwardPull = -latDiff * 0.7
 			const cutInPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, 28, inwardPull, 24)
 
@@ -675,49 +660,39 @@ new (class JuggernautCombo {
 		// =========================================================================
 		// SCENARIO 3: HERO IS TOO FAR AHEAD (leadDelta > 48 and |latDiff| <= 18)
 		// Touching distance is 48 (24 + 24). If leadDelta > 48, hero pulled too far ahead!
-		// DO NOT run further ahead (which causes "walking ahead")!
-		// Stand still (OrderStop) in enemy's path and wait for them to bump hero's back!
+		// DO NOT run further ahead! Slow down by crawling 4 units so enemy catches up into our back!
+		// STRICTLY ZERO OrderStop to prevent auto-attack animation stutter!
 		// =========================================================================
 		if (leadDelta > 48) {
-			this.isBladeFuryStopped = true
-			this.currentBlockTargetPos = hero.Position.Clone()
-			this.issueBladeFuryStop(hero, 65)
+			const crawlPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, 4, -latDiff * 0.2, 10)
+			this.currentBlockTargetPos = crawlPos.Clone()
+			this.issueBladeFuryMove(hero, crawlPos, 70)
 			return
 		}
 
 		// =========================================================================
 		// SCENARIO 4: ACTIVE BODY BLOCKING (32 <= leadDelta <= 48 and |latDiff| <= 18)
 		// Hero is safely in front, in physical collision hull contact (distance 32..48)!
-		// Rhythmic pro Stop-and-Go: Stop (65ms) -> Micro-step (65ms)
+		// Keep hero in continuous micro-movement directly on enemy's nose with lateral weave:
+		// STRICTLY ZERO ATTACK ORDERS, ZERO ORDER_STOP!
 		// =========================================================================
 		if (isPhased) {
 			// If phased, hero has no collision hull, so stay glued on front bumper
-			this.isBladeFuryStopped = false
-			const stepPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, 18, -latDiff * 0.4, 15)
-			this.currentBlockTargetPos = stepPos.Clone()
-			this.issueBladeFuryMove(hero, stepPos, 55)
+			const phasedPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, 18, -latDiff * 0.4, 15)
+			this.currentBlockTargetPos = phasedPos.Clone()
+			this.issueBladeFuryMove(hero, phasedPos, 55)
 			return
 		}
 
-		if (this.isBladeFuryStopped) {
-			// Hero was stopped, enemy has bumped into hero's back!
-			// Take a micro-step forward down escape path with subtle lateral weave (6 units)
-			this.isBladeFuryStopped = false
-			this.bladeFuryZigzagSide = -this.bladeFuryZigzagSide
+		// Micro-step forward matching enemy's pace while sweeping laterally across their path:
+		this.bladeFuryZigzagSide = -this.bladeFuryZigzagSide
+		const lateralWeave = this.bladeFuryZigzagSide * 8 - latDiff * 0.4
+		// Step forward by 10..14 units matching the enemy's pace while sweeping across their path
+		const stepFwd = Math.max(8, Math.min(14, 46 - leadDelta + 6))
+		const stepPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, stepFwd, lateralWeave, 18)
 
-			const lateralWeave = this.bladeFuryZigzagSide * 6 - latDiff * 0.3
-			// Keep micro-step small (12..16 units) so hero stays tightly in collision contact (32..48)
-			const stepFwd = Math.max(12, Math.min(16, 48 - leadDelta + 8))
-			const stepPos = this.getForwardTarget(hero.Position, targetDir, targetPerp, stepFwd, lateralWeave, 15)
-
-			this.currentBlockTargetPos = stepPos.Clone()
-			this.issueBladeFuryMove(hero, stepPos, 65)
-		} else {
-			// Hero was moving, now tap S (OrderStop) to halt and let enemy bump!
-			this.isBladeFuryStopped = true
-			this.currentBlockTargetPos = hero.Position.Clone()
-			this.issueBladeFuryStop(hero, 65)
-		}
+		this.currentBlockTargetPos = stepPos.Clone()
+		this.issueBladeFuryMove(hero, stepPos, 60)
 	}
 
 	private executeBladeFuryItems(hero: Hero, target: Hero): void {
