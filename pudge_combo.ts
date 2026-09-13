@@ -7,6 +7,8 @@ import {
 	EventsSDK,
 	ExecuteOrder,
 	GameState,
+	GridNav,
+	GridNavCellFlags,
 	Hero,
 	InputManager,
 	Item,
@@ -118,6 +120,29 @@ new (class PudgeCombo {
 		true,
 		"Detect erratic direction shifts and dynamically correct lead distance against juking enemies"
 	)
+	private readonly minHitConfidence = this.enemyHookNode.AddSlider(
+		"Min Hit Confidence %",
+		60,
+		20,
+		95,
+		5,
+		"Minimum calculated probability before Meat Hook is cast (100% for disabled, 95% for cast windup)"
+	)
+	private readonly terrainClamping = this.enemyHookNode.AddToggle(
+		"Terrain Clamping (GridNav)",
+		true,
+		"Clamp predicted positions to traversable terrain, preventing hooks into impassable cliffs or trees"
+	)
+	private readonly castWindupSniping = this.enemyHookNode.AddToggle(
+		"Cast & Attack Windup Sniping",
+		true,
+		"Lock onto stationary enemy position when they are winding up an attack or casting an ability"
+	)
+	private readonly preTurnFacing = this.enemyHookNode.AddToggle(
+		"Pre-Turn Facing Towards Target",
+		true,
+		"Turn Pudge towards predicted hook angle while holding combo or smart hook key to eliminate turn delay"
+	)
 
 	// Auto Hook Ally (Save) Settings
 	private readonly allyHookNode = this.entry.AddNode("Auto Hook Ally (Save)")
@@ -223,6 +248,8 @@ new (class PudgeCombo {
 
 	private lockedTarget: Hero | undefined = undefined
 	private lastPredictedHookPos: Vector3 | undefined = undefined
+	private lastHookConfidence = 0
+	private lastBlockerInfo: { clear: boolean; blocker?: Unit; blockerPos?: Vector3 } = { clear: true }
 	private pendingAtosTarget: Hero | undefined = undefined
 	private pendingAtosTime = 0
 	private hookInFlightUntil = 0
@@ -278,6 +305,8 @@ new (class PudgeCombo {
 		this.rotSleeper.ResetTimer()
 		this.lockedTarget = undefined
 		this.lastPredictedHookPos = undefined
+		this.lastHookConfidence = 0
+		this.lastBlockerInfo = { clear: true }
 		this.pendingAtosTarget = undefined
 		this.pendingAtosTime = 0
 		this.hookInFlightUntil = 0
@@ -354,6 +383,70 @@ new (class PudgeCombo {
 	}
 
 	/**
+	 * Checks if a world position is traversable terrain (walkable ground, not cliffs, trees, or impassable boundaries).
+	 */
+	private isTerrainWalkable(pos: Vector3): boolean {
+		if (!GridNav) {
+			return true
+		}
+		try {
+			const flags = GridNav.GetCellFlagsForPos(pos)
+			if (flags === 0) {
+				return false
+			}
+			const isWalkable =
+				typeof flags.hasBit === "function"
+					? flags.hasBit(GridNavCellFlags.Walkable)
+					: (flags & (1 << GridNavCellFlags.Walkable)) !== 0
+			const isTree =
+				typeof flags.hasBit === "function"
+					? flags.hasBit(GridNavCellFlags.Tree)
+					: (flags & (1 << GridNavCellFlags.Tree)) !== 0
+			const isBlocker =
+				typeof flags.hasBit === "function"
+					? flags.hasBit(GridNavCellFlags.MovementBlocker)
+					: (flags & (1 << GridNavCellFlags.MovementBlocker)) !== 0
+			return isWalkable && !isTree && !isBlocker
+		} catch {
+			return true
+		}
+	}
+
+	/**
+	 * Clamps predicted destination along the movement path so it never penetrates impassable terrain (cliffs/trees).
+	 */
+	private clampPredictionToTerrain(startPos: Vector3, desiredPos: Vector3): Vector3 {
+		if (!this.terrainClamping.value || !GridNav) {
+			return desiredPos
+		}
+
+		const moveVec = desiredPos.Subtract(startPos)
+		moveVec.z = 0
+		const totalDist = moveVec.Length
+		if (totalDist < 20) {
+			return desiredPos
+		}
+
+		const normDir = moveVec.Clone().Normalize()
+		const stepSize = 32
+		let lastValidPos = startPos.Clone()
+
+		for (let currentDist = stepSize; currentDist <= totalDist; currentDist += stepSize) {
+			const testPos = startPos.Add(normDir.MultiplyScalar(currentDist))
+			if (!this.isTerrainWalkable(testPos)) {
+				return lastValidPos
+			}
+			lastValidPos = testPos
+		}
+
+		if (!this.isTerrainWalkable(desiredPos)) {
+			return lastValidPos
+		}
+
+		return desiredPos
+	}
+
+	/**
 	 * Calculates true mathematical intercept lead position for Meat Hook, taking into account:
 	 * - Pudge turn time towards predicted target
 	 * - Cast point (0.3s) & network ping / tick latency
@@ -361,6 +454,8 @@ new (class PudgeCombo {
 	 * - True delta velocity tracking & direction history (replaces naive model forward)
 	 * - Juke / zig-zag erratic movement correction
 	 * - Remaining disable time (stun, root, hex, sleep) vs arrival delay
+	 * - Attack and Spell Cast windup lock (sniping stationary enemies during animations)
+	 * - GridNav terrain clamping against cliffs and trees
 	 * - Rod of Atos impact sync
 	 */
 	private calculateHookLead(hero: Hero, target: Hero, hookAbil: Ability): Vector3 {
@@ -388,15 +483,33 @@ new (class PudgeCombo {
 			}
 		}
 
-		// 2. If Rod of Atos was fired at this target, predict where Atos will hit and root them
+		// 2. Cast & Attack Windup Lock (Sniping enemies during animations)
+		if (this.castWindupSniping.value) {
+			const isCastingSpell = target.IsInAbilityPhase
+			const isAttackingWindup =
+				target.IsInAnimation && target.LastAnimationIsAttack && !target.LastAnimationCasted
+
+			if (isCastingSpell || isAttackingWindup) {
+				const turnTime = hero.GetTurnTime(target.Position)
+				const dist = hero.Distance2D(target.Position)
+				const totalDelay = turnTime + castPoint + dist / hookSpeed + latency
+
+				if (totalDelay <= 0.65) {
+					return target.Position.Clone()
+				}
+			}
+		}
+
+		// 3. If Rod of Atos was fired at this target, predict where Atos will hit and root them
 		if (this.pendingAtosTarget === target && GameState.RawGameTime <= this.pendingAtosTime) {
 			const remainingAtosFlight = Math.max(0, this.pendingAtosTime - GameState.RawGameTime)
 			const speed = target.MoveSpeed > 0 ? target.MoveSpeed : 300
 			const forward = target.Forward
-			return target.Position.Add(forward.MultiplyScalar(speed * remainingAtosFlight))
+			const atosPredPos = target.Position.Add(forward.MultiplyScalar(speed * remainingAtosFlight))
+			return this.clampPredictionToTerrain(target.Position, atosPredPos)
 		}
 
-		// 3. Resolve real motion vector using delta tracking (direction & speed)
+		// 4. Resolve real motion vector using delta tracking (direction & speed)
 		const motion = this.targetMotionMap.get(target.Index)
 		let moveVector = target.Forward.MultiplyScalar(target.MoveSpeed > 0 ? target.MoveSpeed : 300)
 		let isJuking = false
@@ -406,7 +519,7 @@ new (class PudgeCombo {
 			isJuking = motion.isJuking && this.jukeCorrection.value
 		}
 
-		// 4. Iterative solver: calculate turn time + cast point + flight time + latency
+		// 5. Iterative solver: calculate turn time + cast point + flight time + latency
 		let predPos = target.Position.Clone()
 
 		for (let iter = 0; iter < 5; iter++) {
@@ -433,7 +546,7 @@ new (class PudgeCombo {
 			predPos = target.Position.Add(displacement)
 		}
 
-		return predPos
+		return this.clampPredictionToTerrain(target.Position, predPos)
 	}
 
 	private updateHeroMotionTracking(): void {
@@ -506,36 +619,119 @@ new (class PudgeCombo {
 	}
 
 	/**
-	 * Checks whether the line segment from Pudge to predicted target is blocked by any creep, neutral, or other hero.
+	 * Calculates dynamic hit confidence score (0 to 100%) for Meat Hook.
 	 */
-	private isHookPathClear(hero: Hero, target: Hero, targetPos: Vector3, hookRadius = 100): boolean {
+	private calculateHookConfidence(hero: Hero, target: Hero, hookAbil: Ability, isClear: boolean): number {
+		if (!isClear) {
+			return 0
+		}
+
+		const dist = hero.Distance2D(target)
+		const hookSpeed = 1600
+		const castPoint = hookAbil.CastPoint > 0 ? hookAbil.CastPoint : 0.3
+		const latency = (GameState.InputLag || 0.03) + 0.033
+		const turnTime = hero.GetTurnTime(target.Position)
+		const totalArrivalTime = turnTime + castPoint + dist / hookSpeed + latency
+
+		// 1. Fully disabled targets (Stunned / Rooted / Hexed / Cyclone / Sleep)
+		const remainingDisable = this.getStunOrRootRemaining(target)
+		if (remainingDisable >= totalArrivalTime) {
+			return 100
+		}
+		if (remainingDisable > 0) {
+			return Math.min(95, Math.round(75 + (remainingDisable / totalArrivalTime) * 20))
+		}
+
+		// 2. Channeling targets (TP, Spells)
+		if (target.IsChanneling) {
+			return 98
+		}
+
+		// 3. Attack or Spell Cast Windup Sniping
+		if (this.castWindupSniping.value) {
+			if (target.IsInAbilityPhase) {
+				return 95
+			}
+			if (target.IsInAnimation && target.LastAnimationIsAttack && !target.LastAnimationCasted) {
+				return 92
+			}
+		}
+
+		const distRatio = Math.min(1, dist / 1400)
+
+		// 4. Stationary targets
+		if (!target.IsMoving) {
+			return Math.round(90 - distRatio * 15) // 75% to 90%
+		}
+
+		// 5. Moving targets
+		const motion = this.targetMotionMap.get(target.Index)
+		let confidence = 85 - distRatio * 30 // 55% at max distance, 85% at close distance
+
+		if (motion) {
+			if (motion.isJuking) {
+				confidence -= 25
+			} else if (motion.directionHistory.length >= 4) {
+				confidence += 10
+			}
+		}
+
+		if (target.MoveSpeed < 250) {
+			confidence += 10
+		}
+
+		return Math.max(10, Math.min(100, Math.round(confidence)))
+	}
+
+	/**
+	 * Exact space-time analytical collision detection between Meat Hook projectile and potential obstacle units.
+	 * Solves quadratic minimum distance f(t) = |H(t) - U(t)|^2 over flight interval [0, tFlight].
+	 */
+	private checkHookObstruction(
+		hero: Hero,
+		target: Unit,
+		targetPos: Vector3,
+		hookRadius = 100
+	): { clear: boolean; blocker?: Unit; blockerPos?: Vector3 } {
 		const isAlly = !target.IsEnemy(hero)
 		if (isAlly) {
 			if (!this.allyCheckObstacles.value) {
-				return true
+				return { clear: true }
 			}
 		} else if (!this.checkObstacles.value) {
-			return true
+			return { clear: true }
 		}
 
-		const p1 = hero.Position
-		const p2 = targetPos
+		const p1 = hero.Position.Clone()
+		const p2 = targetPos.Clone()
+		p1.z = 0
+		p2.z = 0
 
 		const lineVec = p2.Subtract(p1)
+		lineVec.z = 0
 		const lineLenSq = lineVec.x * lineVec.x + lineVec.y * lineVec.y
-		if (lineLenSq === 0) {
-			return true
+		if (lineLenSq < 1) {
+			return { clear: true }
 		}
 		const lineLen = Math.sqrt(lineLenSq)
-		const latency = (GameState.InputLag || 0.03) + 0.033
-		const turnTime = hero.GetTurnTime(p2)
+		const normLine = lineVec.Clone().Normalize()
 
-		// Check all potential obstacle units (creeps, lane creeps, neutrals, other heroes, summons)
+		const hookSpeed = 1600
+		const turnTime = hero.GetTurnTime(targetPos)
+		const castPoint = 0.3
+		const latency = (GameState.InputLag || 0.03) + 0.033
+		const tStart = turnTime + castPoint + latency
+		const tFlight = lineLen / hookSpeed
+
+		const vHook = normLine.MultiplyScalar(hookSpeed)
+
 		const potentialObstacles: Unit[] = [
 			...EntityManager.GetEntitiesByClass(Creep),
-			...EntityManager.GetEntitiesByClass(Hero),
-			...EntityManager.GetEntitiesByClass(Unit)
+			...EntityManager.GetEntitiesByClass(Hero)
 		]
+
+		const maxSearchDist = lineLen + 400
+		const checkedIndices = new Set<number>()
 
 		for (const unit of potentialObstacles) {
 			if (
@@ -544,64 +740,109 @@ new (class PudgeCombo {
 				!unit.IsAlive ||
 				unit.IsInvulnerable ||
 				unit.IsCourier ||
+				unit.IsBuilding ||
+				unit.IsTower ||
 				unit === hero ||
 				unit.Index === hero.Index ||
 				unit === target ||
-				unit.Index === target.Index
+				unit.Index === target.Index ||
+				checkedIndices.has(unit.Index)
 			) {
 				continue
 			}
+			checkedIndices.add(unit.Index)
 
-			// Exclude non-blocking building entities
-			if (unit.IsBuilding || unit.IsTower) {
+			if (hero.Distance2D(unit) > maxSearchDist) {
 				continue
 			}
 
 			const unitRadius = unit.HullRadius > 0 ? unit.HullRadius : 24
-			// In Dota 2, Meat Hook hitbox radius is 100. Effective collision is hookRadius + unitRadius + buffer.
-			const requiredClearance = hookRadius + unitRadius + 15
+			const collisionThreshold = hookRadius + unitRadius + 12
 
-			// 1. Current position obstacle check
-			const uPos = unit.Position
-			const toUnit = uPos.Subtract(p1)
-
-			const t = (toUnit.x * lineVec.x + toUnit.y * lineVec.y) / lineLenSq
-
-			// Check if obstacle is along the path between Pudge and target
-			if (t >= -0.05 && t <= 1.05) {
-				const clampedT = Math.max(0, Math.min(1, t))
-				const proj = p1.Add(lineVec.MultiplyScalar(clampedT))
-				const dist = proj.Distance2D(uPos)
-
-				if (dist < requiredClearance) {
-					return false // Path is blocked by this unit
+			let vUnit = new Vector3(0, 0, 0)
+			if (unit.IsMoving) {
+				if (unit instanceof Hero) {
+					const motion = this.targetMotionMap.get(unit.Index)
+					if (motion && motion.velocity.Length > 30) {
+						vUnit = motion.velocity.Clone()
+					} else {
+						const uSpeed = unit.MoveSpeed > 0 ? unit.MoveSpeed : 300
+						vUnit = unit.Forward.MultiplyScalar(uSpeed)
+					}
+				} else {
+					const uSpeed = unit.MoveSpeed > 0 ? unit.MoveSpeed : 300
+					vUnit = unit.Forward.MultiplyScalar(uSpeed)
 				}
+				vUnit.z = 0
 			}
 
-			// 2. Moving unit predicted intercept check
-			if (unit.IsMoving) {
-				const clampedT = Math.max(0, Math.min(1, t))
-				const distAlongHook = clampedT * lineLen
-				const hookArrivalTime = turnTime + 0.3 + distAlongHook / 1600 + latency
-				const uSpeed = unit.MoveSpeed > 0 ? unit.MoveSpeed : 300
-				const predPos = unit.Position.Add(unit.Forward.MultiplyScalar(uSpeed * hookArrivalTime))
-				const toPredUnit = predPos.Subtract(p1)
+			const uStart = unit.Position.Clone().Add(vUnit.MultiplyScalar(tStart))
+			uStart.z = 0
 
-				const tPred = (toPredUnit.x * lineVec.x + toPredUnit.y * lineVec.y) / lineLenSq
+			const w0 = p1.Subtract(uStart)
+			w0.z = 0
+			const vRel = vHook.Subtract(vUnit)
+			vRel.z = 0
 
-				if (tPred >= -0.05 && tPred <= 1.05) {
-					const clampedTPred = Math.max(0, Math.min(1, tPred))
-					const projPred = p1.Add(lineVec.MultiplyScalar(clampedTPred))
-					const distPred = projPred.Distance2D(predPos)
+			const a = vRel.x * vRel.x + vRel.y * vRel.y
+			const b = 2 * (w0.x * vRel.x + w0.y * vRel.y)
 
-					if (distPred < requiredClearance) {
-						return false // Moving unit will intercept the hook
+			let tClosest = 0
+			if (a > 0.001) {
+				const tStar = -b / (2 * a)
+				tClosest = Math.max(0, Math.min(tFlight, tStar))
+			}
+
+			const deltaAtClosest = w0.Add(vRel.MultiplyScalar(tClosest))
+			const distAtClosest = deltaAtClosest.Length
+
+			const uPosAtClosest = uStart.Add(vUnit.MultiplyScalar(tClosest))
+			const projAlongHook = (uPosAtClosest.x - p1.x) * normLine.x + (uPosAtClosest.y - p1.y) * normLine.y
+
+			if (projAlongHook >= -unitRadius && projAlongHook <= lineLen + unitRadius) {
+				if (distAtClosest < collisionThreshold) {
+					return {
+						clear: false,
+						blocker: unit,
+						blockerPos: uPosAtClosest
 					}
 				}
 			}
 		}
 
-		return true
+		return { clear: true }
+	}
+
+	/**
+	 * Checks whether the line segment from Pudge to predicted target is blocked by any creep, neutral, or other hero.
+	 */
+	private isHookPathClear(hero: Hero, target: Unit, targetPos: Vector3, hookRadius = 100): boolean {
+		const res = this.checkHookObstruction(hero, target, targetPos, hookRadius)
+		this.lastBlockerInfo = res
+		return res.clear
+	}
+
+	/**
+	 * Pre-turns Pudge towards predicted hook angle while holding combo or smart hook keys to eliminate turn delay.
+	 */
+	private handlePreTurn(hero: Hero, targetPos: Vector3): void {
+		if (!this.preTurnFacing.value) {
+			return
+		}
+		if (hero.IsChanneling || hero.IsInAbilityPhase) {
+			return
+		}
+		const turnTime = hero.GetTurnTime(targetPos)
+		if (turnTime > 0.06) {
+			ExecuteOrder.PrepareOrder({
+				orderType: dotaunitorder_t.DOTA_UNIT_ORDER_MOVE_TO_DIRECTION,
+				issuers: [hero],
+				position: targetPos,
+				queue: false,
+				showEffects: false,
+				isPlayerInput: false
+			})
+		}
 	}
 
 	/**
@@ -728,6 +969,15 @@ new (class PudgeCombo {
 		if (!this.isHookPathClear(hero, target, this.castingHookPos)) {
 			this.cancelHookCast(hero)
 			return true
+		}
+
+		// 4. Hit confidence drop check (e.g. target started juking during cast windup)
+		if (!isAlly) {
+			const confidence = this.calculateHookConfidence(hero, target, hook, true)
+			if (confidence < Math.max(25, this.minHitConfidence.value - 15)) {
+				this.cancelHookCast(hero)
+				return true
+			}
 		}
 
 		return false
@@ -1294,13 +1544,48 @@ new (class PudgeCombo {
 		// Draw predicted hook path indicator if enabled
 		if (this.autoHookDrawTarget.value && this.lastPredictedHookPos) {
 			const targetScreenPos = RendererSDK.WorldToScreen(this.lastPredictedHookPos)
+			const pudgeScreenPos = RendererSDK.WorldToScreen(hero.Position)
+
+			const isBlocked = !this.lastBlockerInfo.clear
+			const conf = this.lastHookConfidence
+			const minConf = this.minHitConfidence.value
+
+			let drawColor = Color.Red
+			let statusText = "BLOCKED"
+			if (this.lastBlockerInfo.blocker) {
+				const bName = this.lastBlockerInfo.blocker.Name.replace("npc_dota_creep_", "")
+					.replace("npc_dota_hero_", "")
+					.replace("npc_dota_", "")
+				statusText = `BLOCKED (${bName})`
+			}
+
+			if (!isBlocked) {
+				if (conf >= minConf) {
+					drawColor = Color.Green
+					statusText = `HOOK READY (${conf}%)`
+				} else {
+					drawColor = new Color(255, 180, 0, 255)
+					statusText = `LOW CHANCE (${conf}%)`
+				}
+			}
+
 			if (targetScreenPos) {
 				const circleSize = new Vector2(50, 50)
-				RendererSDK.OutlinedCircle(targetScreenPos.Subtract(new Vector2(25, 25)), circleSize, Color.Red, 2)
+				RendererSDK.OutlinedCircle(targetScreenPos.Subtract(new Vector2(25, 25)), circleSize, drawColor, 2)
+				RendererSDK.Text(statusText, targetScreenPos.Add(new Vector2(-40, 28)), drawColor, "Arial", 12)
 			}
-			const pudgeScreenPos = RendererSDK.WorldToScreen(hero.Position)
+
 			if (pudgeScreenPos && targetScreenPos) {
-				RendererSDK.Line(pudgeScreenPos, targetScreenPos, Color.Red.SetA(150), 2)
+				RendererSDK.Line(pudgeScreenPos, targetScreenPos, drawColor.SetA(160), 2)
+			}
+
+			// If path is blocked and blocker pos is identified, highlight blocker
+			if (isBlocked && this.lastBlockerInfo.blockerPos) {
+				const blockerScreenPos = RendererSDK.WorldToScreen(this.lastBlockerInfo.blockerPos)
+				if (blockerScreenPos) {
+					const bSize = new Vector2(30, 30)
+					RendererSDK.OutlinedCircle(blockerScreenPos.Subtract(new Vector2(15, 15)), bSize, Color.Red, 2)
+				}
 			}
 		}
 	}
@@ -1406,8 +1691,11 @@ new (class PudgeCombo {
 				if (nearestEnemy) {
 					const predictedPos = this.calculateHookLead(hero, nearestEnemy, instantHook)
 					this.lastPredictedHookPos = predictedPos
+					const isClear = this.isHookPathClear(hero, nearestEnemy, predictedPos)
+					const confidence = this.calculateHookConfidence(hero, nearestEnemy, instantHook, isClear)
+					this.lastHookConfidence = confidence
 
-					if (this.isHookPathClear(hero, nearestEnemy, predictedPos)) {
+					if (isClear && confidence >= this.minHitConfidence.value) {
 						this.hookInFlightUntil = GameState.RawGameTime + hero.Distance2D(nearestEnemy) / 1600 + 0.6
 						this.castingHookTarget = nearestEnemy
 						this.castingHookPos = predictedPos
@@ -1425,6 +1713,7 @@ new (class PudgeCombo {
 						this.sleeper.Sleep(instantHook.CastPoint * 1000 + 400)
 						return
 					}
+					this.handlePreTurn(hero, predictedPos)
 				}
 			}
 		}
@@ -1466,8 +1755,10 @@ new (class PudgeCombo {
 				if (nearestAlly) {
 					const predictedPos = this.calculateHookLead(hero, nearestAlly, allyHook)
 					this.lastPredictedHookPos = predictedPos
+					const isClear = this.isHookPathClear(hero, nearestAlly, predictedPos)
+					this.lastHookConfidence = 100
 
-					if (this.isHookPathClear(hero, nearestAlly, predictedPos)) {
+					if (isClear) {
 						this.hookInFlightUntil = GameState.RawGameTime + hero.Distance2D(nearestAlly) / 1600 + 0.6
 						this.castingHookTarget = nearestAlly
 						this.castingHookPos = predictedPos
@@ -1485,17 +1776,29 @@ new (class PudgeCombo {
 						this.sleeper.Sleep(allyHook.CastPoint * 1000 + 400)
 						return
 					}
+					this.handlePreTurn(hero, predictedPos)
 				}
 			}
 		}
 
-		// 6. Check if Combo Key is held
+		// 6. Check if any hook/combo hotkey is active
 		// @ts-ignore
-		if (!this.comboKey.isPressed) {
+		const isAnyKeyActive = Boolean(
+			this.comboKey.isPressed || this.standaloneHookKey.isPressed || this.hookAllyKey.isPressed
+		)
+
+		if (!isAnyKeyActive) {
 			this.lockedTarget = undefined
 			this.lastPredictedHookPos = undefined
 			this.pendingAtosTarget = undefined
+			this.lastHookConfidence = 0
+			this.lastBlockerInfo = { clear: true }
 			this.pSDK.DestroyByKey("pudge_target_ring")
+			return
+		}
+
+		// @ts-ignore
+		if (!this.comboKey.isPressed) {
 			return
 		}
 
@@ -1568,8 +1871,11 @@ new (class PudgeCombo {
 						if (dist <= effectiveMaxRange && (dist > 250 || isTargetDisabled)) {
 							const predictedPos = this.calculateHookLead(hero, bestTarget, hook)
 							this.lastPredictedHookPos = predictedPos
+							const isClear = this.isHookPathClear(hero, bestTarget, predictedPos)
+							const confidence = this.calculateHookConfidence(hero, bestTarget, hook, isClear)
+							this.lastHookConfidence = confidence
 
-							if (this.isHookPathClear(hero, bestTarget, predictedPos)) {
+							if (isClear && (isTargetDisabled || confidence >= this.minHitConfidence.value)) {
 								this.hookInFlightUntil = GameState.RawGameTime + dist / 1600 + 0.6
 								this.castingHookTarget = bestTarget
 								this.castingHookPos = predictedPos
