@@ -41,7 +41,8 @@ const INITIATION_SPELLS = [
 	"bane_fiends_grip",
 	"legion_commander_duel",
 	"batrider_flaming_lasso",
-	"primal_beast_pulverize"
+	"primal_beast_pulverize",
+	"lich_sinister_gaze"
 ]
 
 const INITIATION_MODIFIERS = [
@@ -70,6 +71,7 @@ const SUPPORTED_SPELLS: SpellConfig[] = [
 	{ name: "ogre_magi_fireblast", label: "Fire Blast", piercesBkb: false, castType: "target" },
 	{ name: "luna_lucent_beam", label: "Lucent Beam", piercesBkb: false, castType: "target" },
 	{ name: "crystal_maiden_frostbite", label: "Frostbite", piercesBkb: false, castType: "target" },
+	{ name: "lich_sinister_gaze", label: "Sinister Gaze (Lich)", piercesBkb: false, castType: "target" },
 	{
 		name: "obsidian_destroyer_astral_imprisonment",
 		label: "Astral Imprisonment",
@@ -729,11 +731,12 @@ new (class AntiInitiationUtility {
 			return
 		}
 
-		// Skip if target is already disabled (Stunned, Hexed, Nightmared, or Cycloned)
+		// Skip if target is already disabled (Stunned, Hexed, Nightmared, Cycloned, or Sinister Gaze)
 		if (
 			enemy.IsStunned ||
 			enemy.IsHexed ||
 			enemy.IsNightmared ||
+			enemy.HasBuffByName("modifier_lich_sinister_gaze") ||
 			enemy.HasBuffByName("modifier_eul_cyclone") ||
 			enemy.HasBuffByName("modifier_wind_waker")
 		) {
