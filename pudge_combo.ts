@@ -96,11 +96,16 @@ new (class PudgeCombo {
 	)
 	private readonly cancelTolerance = this.enemyHookNode.AddSlider(
 		"Cancel Position Tolerance",
-		90,
-		40,
-		180,
+		120,
+		50,
+		220,
 		5,
-		"Max deviation in units before canceling Hook windup (Hook radius is 100)"
+		"Max deviation in units before canceling Hook windup (Hook radius is 100, Hull is 24)"
+	)
+	private readonly allowMeleeHook = this.enemyHookNode.AddToggle(
+		"Point-Blank Hook (Melee Range / After Dismember)",
+		true,
+		"Allow casting Meat Hook at close/melee range (< 250) to finish off enemies, especially right after Dismember"
 	)
 	private readonly autoHookDrawTarget = this.enemyHookNode.AddToggle(
 		"Draw Hook Predicted Indicator",
@@ -580,7 +585,10 @@ new (class PudgeCombo {
 				if (distMoved > 2.0 && observedSpeed > 40) {
 					const moveDir = delta.Clone().Normalize()
 					const effectiveSpeed = Math.min(target.MoveSpeed * 1.25, observedSpeed)
-					existing.velocity = moveDir.MultiplyScalar(effectiveSpeed)
+					existing.velocity =
+						existing.velocity.Length > 20
+							? existing.velocity.MultiplyScalar(0.3).Add(moveDir.MultiplyScalar(effectiveSpeed * 0.7))
+							: moveDir.MultiplyScalar(effectiveSpeed)
 
 					existing.directionHistory.push(moveDir)
 					if (existing.directionHistory.length > 5) {
@@ -593,15 +601,17 @@ new (class PudgeCombo {
 							const prev = existing.directionHistory[i - 1]
 							const curr = existing.directionHistory[i]
 							const dot = prev.x * curr.x + prev.y * curr.y
-							if (dot < 0.5) {
+							if (dot < 0.4) {
 								sharpTurns++
 							}
 						}
 						existing.isJuking = sharpTurns >= 2
 					}
-				} else {
+				} else if (!target.IsMoving || distMoved < 1.0) {
 					existing.velocity = new Vector3(0, 0, 0)
-					existing.directionHistory.length = 0
+					if (existing.directionHistory.length > 0) {
+						existing.directionHistory.shift()
+					}
 					existing.isJuking = false
 				}
 
@@ -798,8 +808,8 @@ new (class PudgeCombo {
 
 			const uPosAtClosest = uStart.Add(vUnit.MultiplyScalar(tClosest))
 			const projAlongHook = (uPosAtClosest.x - p1.x) * normLine.x + (uPosAtClosest.y - p1.y) * normLine.y
-
-			if (projAlongHook >= -unitRadius && projAlongHook <= lineLen + unitRadius) {
+			// Only check obstacles physically in front of Pudge (>= 35 units) and before target (<= lineLen - 15)
+			if (projAlongHook >= 35 && projAlongHook <= lineLen - 15) {
 				if (distAtClosest < collisionThreshold) {
 					return {
 						clear: false,
@@ -955,29 +965,47 @@ new (class PudgeCombo {
 			return true
 		}
 
-		// 2. Trajectory deviation check
-		const newPredPos = this.calculateHookLead(hero, target, hook)
-		const deviation = newPredPos.Distance2D(this.castingHookPos)
-		const maxTolerance = this.cancelTolerance.value
+		// 2. Space-Time trajectory deviation check
+		// If target is disabled (stunned, rooted, hexed) or in point-blank range (<= 250), they cannot juke away, skip deviation cancel!
+		const currentDist = hero.Distance2D(target)
+		const isTargetDisabled = target.IsStunned || target.IsRooted || target.IsHexed
+		if (!isTargetDisabled && currentDist > 250) {
+			// Calculate remaining time until the hook arrives at the designated aim point
+			const castPoint = hook.CastPoint > 0 ? hook.CastPoint : 0.3
+			const distToAim = hero.Distance2D(this.castingHookPos)
+			const hookSpeed = 1600
+			const totalExpectedArrival = this.castingHookStartTime + castPoint + distToAim / hookSpeed
+			const remainingTime = Math.max(0, totalExpectedArrival - GameState.RawGameTime)
 
-		if (deviation > maxTolerance) {
-			this.cancelHookCast(hero)
-			return true
-		}
+			// Determine target's true current velocity
+			const motion = this.targetMotionMap.get(target.Index)
+			let targetVelocity = new Vector3(0, 0, 0)
+			if (target.IsMoving) {
+				if (motion && motion.velocity.Length > 30) {
+					targetVelocity = motion.velocity.Clone()
+				} else {
+					const speed = target.MoveSpeed > 0 ? target.MoveSpeed : 300
+					targetVelocity = target.Forward.MultiplyScalar(speed)
+				}
+				targetVelocity.z = 0
+			}
 
-		// 3. Obstacle collision check (creep or hero walked into the path)
-		if (!this.isHookPathClear(hero, target, this.castingHookPos)) {
-			this.cancelHookCast(hero)
-			return true
-		}
+			// Where target will actually be when hook arrives if continuing on current course
+			const expectedTargetPos = target.Position.Add(targetVelocity.MultiplyScalar(remainingTime))
+			const deviation = expectedTargetPos.Distance2D(this.castingHookPos)
+			const maxTolerance = this.cancelTolerance.value
 
-		// 4. Hit confidence drop check (e.g. target started juking during cast windup)
-		if (!isAlly) {
-			const confidence = this.calculateHookConfidence(hero, target, hook, true)
-			if (confidence < Math.max(25, this.minHitConfidence.value - 15)) {
+			// Only cancel if target actually juked / stopped / reversed direction outside the hook hitbox!
+			if (deviation > maxTolerance) {
 				this.cancelHookCast(hero)
 				return true
 			}
+		}
+
+		// 3. Obstacle collision check (creep or hero walked into the path)
+		if (currentDist > 250 && !this.isHookPathClear(hero, target, this.castingHookPos)) {
+			this.cancelHookCast(hero)
+			return true
 		}
 
 		return false
@@ -1693,9 +1721,14 @@ new (class PudgeCombo {
 					this.lastPredictedHookPos = predictedPos
 					const isClear = this.isHookPathClear(hero, nearestEnemy, predictedPos)
 					const confidence = this.calculateHookConfidence(hero, nearestEnemy, instantHook, isClear)
-					this.lastHookConfidence = confidence
+					const meetsConfidence =
+						nearestEnemy.IsStunned ||
+						nearestEnemy.IsRooted ||
+						nearestEnemy.IsHexed ||
+						hero.Distance2D(nearestEnemy) <= 300 ||
+						confidence >= this.minHitConfidence.value
 
-					if (isClear && confidence >= this.minHitConfidence.value) {
+					if (isClear && meetsConfidence) {
 						this.hookInFlightUntil = GameState.RawGameTime + hero.Distance2D(nearestEnemy) / 1600 + 0.6
 						this.castingHookTarget = nearestEnemy
 						this.castingHookPos = predictedPos
@@ -1861,21 +1894,28 @@ new (class PudgeCombo {
 						const castRange = hook.CastRange > 0 ? hook.CastRange : 1300
 						const dist = hero.Distance2D(bestTarget)
 
-						// Cast hook if outside melee range (> 250) or if target is rooted/stunned
+						// Cast hook if outside melee range (> 250), or if target is disabled, or if point-blank hook is enabled
 						const isTargetDisabled =
 							bestTarget.IsRooted || bestTarget.IsStunned || bestTarget.IsHexed || bestTarget.IsChanneling
 						const effectiveMaxRange = isTargetDisabled
 							? castRange
 							: Math.min(castRange, this.maxComboHookDistance.value)
 
-						if (dist <= effectiveMaxRange && (dist > 250 || isTargetDisabled)) {
+						const canHookDistance =
+							dist <= effectiveMaxRange && (dist > 250 || isTargetDisabled || this.allowMeleeHook.value)
+
+						if (canHookDistance) {
 							const predictedPos = this.calculateHookLead(hero, bestTarget, hook)
 							this.lastPredictedHookPos = predictedPos
 							const isClear = this.isHookPathClear(hero, bestTarget, predictedPos)
 							const confidence = this.calculateHookConfidence(hero, bestTarget, hook, isClear)
 							this.lastHookConfidence = confidence
 
-							if (isClear && (isTargetDisabled || confidence >= this.minHitConfidence.value)) {
+							// In point-blank / melee range (dist <= 300) or when disabled: hit is guaranteed, bypass distance confidence threshold!
+							const meetsConfidence =
+								isTargetDisabled || dist <= 300 || confidence >= this.minHitConfidence.value
+
+							if (isClear && meetsConfidence) {
 								this.hookInFlightUntil = GameState.RawGameTime + dist / 1600 + 0.6
 								this.castingHookTarget = bestTarget
 								this.castingHookPos = predictedPos
