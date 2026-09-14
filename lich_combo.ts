@@ -23,11 +23,11 @@ import { claimOrder, isRealHero } from "./coordination"
 import { executeOrbwalk } from "./orbwalker"
 
 const COMBO_SPELLS = [
-	"lich_sinister_gaze",
 	"lich_ice_spire",
 	"lich_chain_frost",
 	"lich_frost_nova",
-	"lich_frost_shield"
+	"lich_frost_shield",
+	"lich_sinister_gaze"
 ]
 
 const COMBO_ITEMS = [
@@ -71,9 +71,9 @@ new (class LichCombo {
 	// Sinister Gaze (Skill 3) Settings
 	private readonly gazeNode = this.entry.AddNode("Sinister Gaze (E)")
 	private readonly allowSpellsDuringGaze = this.gazeNode.AddToggle(
-		"Cast Spells & Items During Gaze",
+		"Cast Spells & Items During Gaze (Requires Scepter)",
 		true,
-		"Lich can cast abilities and items during Sinister Gaze without breaking the channel"
+		"Allows casting abilities and items during Sinister Gaze (Only active when Lich possesses Aghanim's Scepter)"
 	)
 	private readonly protectGazeChannel = this.gazeNode.AddToggle(
 		"Strict Gaze Channel Protection",
@@ -197,11 +197,11 @@ new (class LichCombo {
 
 	constructor() {
 		const defaultCombo = new Map<string, [boolean, boolean, boolean, number]>()
-		defaultCombo.set("lich_sinister_gaze", [true, true, true, 0])
-		defaultCombo.set("lich_ice_spire", [true, true, true, 1])
-		defaultCombo.set("lich_chain_frost", [true, true, true, 2])
-		defaultCombo.set("lich_frost_nova", [true, true, true, 3])
-		defaultCombo.set("lich_frost_shield", [true, true, true, 4])
+		defaultCombo.set("lich_ice_spire", [true, true, true, 0])
+		defaultCombo.set("lich_chain_frost", [true, true, true, 1])
+		defaultCombo.set("lich_frost_nova", [true, true, true, 2])
+		defaultCombo.set("lich_frost_shield", [true, true, true, 3])
+		defaultCombo.set("lich_sinister_gaze", [true, true, true, 4])
 
 		this.comboSequenceGrid = this.entry.AddDynamicImageSelector("Combo Order", COMBO_SPELLS, defaultCombo)
 
@@ -259,7 +259,8 @@ new (class LichCombo {
 	private isGazing(hero: Hero): boolean {
 		const gaze = hero.GetAbilityByName("lich_sinister_gaze")
 		return Boolean(
-			hero.HasBuffByName("modifier_lich_sinister_gaze_self") || (gaze && gaze.IsValid && gaze.IsChanneling)
+			hero.HasBuffByName("modifier_lich_sinister_gaze_self") ||
+				(gaze && gaze.IsValid && (gaze.IsChanneling || gaze.IsInAbilityPhase))
 		)
 	}
 
@@ -395,15 +396,27 @@ new (class LichCombo {
 			return
 		}
 
-		// Allow all ability and item casts during Sinister Gaze!
+		// If Lich has Scepter, all ability and item casts are permitted during Gaze!
+		if (hero.HasScepter) {
+			if (
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET_TREE ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT ||
+				order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_AUTO
+			) {
+				return
+			}
+		}
+
+		// Allow Glimmer Cape and Shiva's Guard (never break channeling even without Scepter)
+		const ability = order.Ability_
 		if (
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET_TREE ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_ALT ||
-			order.OrderType === dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TOGGLE_AUTO
+			ability &&
+			typeof ability !== "number" &&
+			(ability.Name === "item_glimmer_cape" || ability.Name === "item_shivas_guard")
 		) {
 			return
 		}
@@ -516,6 +529,47 @@ new (class LichCombo {
 		}
 
 		return false
+	}
+
+	/**
+	 * Executes items that do not break channeling during Sinister Gaze (Glimmer Cape, Shiva's Guard).
+	 */
+	private executeGazeSafeItems(hero: Hero, bestTarget: Hero): void {
+		// 1. GLIMMER CAPE (Never breaks channeling)
+		if (this.itemsSelector.IsEnabled("item_glimmer_cape")) {
+			const glimmer = this.getItem(hero, "item_glimmer_cape")
+			if (glimmer && glimmer.Cooldown <= 0.1 && hero.Mana >= glimmer.ManaCost) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+					issuers: [hero],
+					target: hero.Index,
+					ability: glimmer.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+				return
+			}
+		}
+
+		// 2. SHIVA'S GUARD (Never breaks channeling)
+		if (this.itemsSelector.IsEnabled("item_shivas_guard")) {
+			const shiva = this.getItem(hero, "item_shivas_guard")
+			if (shiva && shiva.Cooldown <= 0.1 && hero.Mana >= shiva.ManaCost && hero.Distance2D(bestTarget) <= 900) {
+				claimOrder()
+				ExecuteOrder.PrepareOrder({
+					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_NO_TARGET,
+					issuers: [hero],
+					ability: shiva.Index,
+					queue: false,
+					showEffects: true,
+					isPlayerInput: false
+				})
+				this.sleeper.Sleep(GameState.InputLag * 1000 + 80)
+			}
+		}
 	}
 
 	/**
@@ -964,8 +1018,11 @@ new (class LichCombo {
 		const isGazeActive = this.isGazing(hero)
 		const isTargetImmune = bestTarget.IsMagicImmune || bestTarget.IsDebuffImmune
 
-		// If channeling Sinister Gaze and casting spells during Gaze is disabled by user, wait until channel ends
-		if (isGazeActive && !this.allowSpellsDuringGaze.value) {
+		// If channeling Sinister Gaze:
+		// In Dota 2, Lich can ONLY cast spells & items during Sinister Gaze IF he possesses Aghanim's Scepter!
+		// Without Scepter, casting any ability will immediately break the channel in Dota 2.
+		if (isGazeActive && (!hero.HasScepter || !this.allowSpellsDuringGaze.value)) {
+			this.executeGazeSafeItems(hero, bestTarget)
 			return
 		}
 
