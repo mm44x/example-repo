@@ -641,6 +641,21 @@ new (class AntiInitiationUtility {
 										}
 									}
 
+									// If Lich has Aghanim's Scepter, Sinister Gaze becomes an AoE ground cast
+									if (config.name === "lich_sinister_gaze" && hero.HasScepter) {
+										ExecuteOrder.PrepareOrder({
+											orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+											issuers: [hero],
+											position: enemy.Position.Clone(),
+											ability: spell.Index,
+											queue: false,
+											showEffects: true,
+											isPlayerInput: false
+										})
+										claimOrder()
+										return
+									}
+
 									ExecuteOrder.PrepareOrder({
 										orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
 										issuers: [hero],

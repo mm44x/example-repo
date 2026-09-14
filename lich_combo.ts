@@ -16,7 +16,8 @@ import {
 	RendererSDK,
 	TickSleeper,
 	Unit,
-	Vector2
+	Vector2,
+	Vector3
 } from "github.com/octarine-public/wrapper/index"
 
 import { claimOrder, isRealHero } from "./coordination"
@@ -314,6 +315,59 @@ new (class LichCombo {
 	}
 
 	/**
+	 * Calculates optimal ground position for Aghanim's Scepter 400-radius AoE Sinister Gaze.
+	 * Finds midpoint/centroid to catch the maximum number of enemy heroes while ensuring primary target is caught.
+	 */
+	private getBestGazeAoEPosition(hero: Hero, primaryTarget: Hero, aoeRadius = 400): Vector3 {
+		const enemies: Hero[] = [primaryTarget]
+		const searchRadius = aoeRadius * 1.8
+
+		for (const enemy of EntityManager.GetEntitiesByClass(Hero)) {
+			if (
+				enemy.IsValid &&
+				enemy.IsAlive &&
+				enemy.IsVisible &&
+				enemy.IsEnemy(hero) &&
+				!enemy.IsIllusion &&
+				enemy !== primaryTarget &&
+				!enemy.IsMagicImmune &&
+				!enemy.IsDebuffImmune &&
+				primaryTarget.Distance2D(enemy) <= searchRadius
+			) {
+				enemies.push(enemy)
+			}
+		}
+
+		if (enemies.length === 1) {
+			return primaryTarget.Position.Clone()
+		}
+
+		let bestPos = primaryTarget.Position.Clone()
+		let maxCount = 1
+
+		for (let i = 0; i < enemies.length; i++) {
+			for (let j = i; j < enemies.length; j++) {
+				const midpoint = enemies[i].Position.Add(enemies[j].Position).MultiplyScalar(0.5)
+				// Ensure primary target is always safely caught within the 400 AoE radius
+				if (primaryTarget.Distance2D(midpoint) <= aoeRadius - 40) {
+					let count = 0
+					for (const e of enemies) {
+						if (e.Distance2D(midpoint) <= aoeRadius - 30) {
+							count++
+						}
+					}
+					if (count > maxCount) {
+						maxCount = count
+						bestPos = midpoint
+					}
+				}
+			}
+		}
+
+		return bestPos
+	}
+
+	/**
 	 * Selects the optimal target for Frost Shield in combo.
 	 */
 	private getBestFrostShieldTarget(hero: Hero, bestTarget: Hero): Unit | undefined {
@@ -514,15 +568,27 @@ new (class LichCombo {
 				hero.Distance2D(enemy) <= castRange + 50
 			) {
 				claimOrder()
-				ExecuteOrder.PrepareOrder({
-					orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
-					issuers: [hero],
-					target: enemy.Index,
-					ability: gaze.Index,
-					queue: false,
-					showEffects: true,
-					isPlayerInput: false
-				})
+				if (hero.HasScepter) {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+						issuers: [hero],
+						position: enemy.Position.Clone(),
+						ability: gaze.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				} else {
+					ExecuteOrder.PrepareOrder({
+						orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
+						issuers: [hero],
+						target: enemy.Index,
+						ability: gaze.Index,
+						queue: false,
+						showEffects: true,
+						isPlayerInput: false
+					})
+				}
 				this.interruptSleeper.Sleep(gaze.CastPoint * 1000 + 300)
 				return true
 			}
@@ -1050,7 +1116,26 @@ new (class LichCombo {
 						!isTargetImmune
 					) {
 						const castRange = gaze.CastRange > 0 ? gaze.CastRange : 575
-						if (hero.Distance2D(bestTarget) <= castRange + 100) {
+
+						if (hero.HasScepter) {
+							// AGHANIM'S SCEPTER: 400-Radius AoE Ground Cast (Multi-Target Cluster)
+							const aoePos = this.getBestGazeAoEPosition(hero, bestTarget, 400)
+							if (hero.Distance2D(aoePos) <= castRange + 150) {
+								claimOrder()
+								ExecuteOrder.PrepareOrder({
+									orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_POSITION,
+									issuers: [hero],
+									position: aoePos,
+									ability: gaze.Index,
+									queue: false,
+									showEffects: true,
+									isPlayerInput: false
+								})
+								this.sleeper.Sleep(GameState.InputLag * 1000 + gaze.CastPoint * 1000 + 120)
+								return
+							}
+						} else if (hero.Distance2D(bestTarget) <= castRange + 100) {
+							// BASE: Single Target Unit Cast
 							claimOrder()
 							ExecuteOrder.PrepareOrder({
 								orderType: dotaunitorder_t.DOTA_UNIT_ORDER_CAST_TARGET,
